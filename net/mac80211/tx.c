@@ -3546,8 +3546,18 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 	struct ieee80211_tx_data tx;
 	ieee80211_tx_result r;
 	struct ieee80211_vif *vif = txq->vif;
+	u32 airtime = 0, airtime_queued;
+	u8 ac = txq->ac;
+	u32 pktlen;
 
 	WARN_ON_ONCE(softirq_count() == 0);
+
+	spin_lock_bh(&local->active_txq_lock[ac]);
+	airtime_queued = local->airtime_queued[ac];
+	spin_unlock_bh(&local->active_txq_lock[ac]);
+
+	if (airtime_queued > IEEE80211_AIRTIME_QUEUE_LIMIT)
+		return NULL;
 
 begin:
 	spin_lock_bh(&fq->lock);
@@ -3581,8 +3591,19 @@ begin:
 	tx.skb = skb;
 	tx.sdata = vif_to_sdata(info->control.vif);
 
-	if (txq->sta)
+	pktlen = skb->len + 38;
+	if (txq->sta) {
 		tx.sta = container_of(txq->sta, struct sta_info, sta);
+		if (tx.sta->last_tx_bitrate) {
+			airtime = (pktlen * 8 * 1000 *
+				   tx.sta->last_tx_bitrate_reciprocal) >> IEEE80211_RECIPROCAL_SHIFT;
+			airtime += IEEE80211_AIRTIME_OVERHEAD;
+		}
+	} else {
+		airtime = (pktlen * 8 * 1000 *
+			   IEEE80211_AIRTIME_MINRATE_RECIPROCAL) >> IEEE80211_RECIPROCAL_SHIFT;
+		airtime += IEEE80211_AIRTIME_OVERHEAD;
+	}
 
 	/*
 	 * The key can be removed while the packet was queued, so need to call
@@ -3659,6 +3680,15 @@ begin:
 	}
 
 	IEEE80211_SKB_CB(skb)->control.vif = vif;
+
+	if (airtime) {
+		info->control.tx_time_est = airtime;
+
+		spin_lock_bh(&local->active_txq_lock[ac]);
+		local->airtime_queued[ac] += airtime;
+		spin_unlock_bh(&local->active_txq_lock[ac]);
+	}
+
 	return skb;
 
 out:
@@ -3675,6 +3705,9 @@ struct ieee80211_txq *ieee80211_next_txq(struct ieee80211_hw *hw, u8 ac)
 	struct txq_info *txqi = NULL;
 
 	spin_lock_bh(&local->active_txq_lock[ac]);
+
+	if (local->airtime_queued[ac] > IEEE80211_AIRTIME_QUEUE_LIMIT)
+		goto out;
 
  begin:
 	txqi = list_first_entry_or_null(&local->active_txqs[ac],
@@ -3752,6 +3785,9 @@ bool ieee80211_txq_may_transmit(struct ieee80211_hw *hw,
 	u8 ac = txq->ac;
 
 	spin_lock_bh(&local->active_txq_lock[ac]);
+
+	if (local->airtime_queued[ac] > IEEE80211_AIRTIME_QUEUE_LIMIT)
+		goto out;
 
 	if (!txqi->txq.sta)
 		goto out;

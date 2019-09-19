@@ -63,6 +63,12 @@ struct ieee80211_local;
 #define IEEE80211_RECIPROCAL_DIVISOR 0x100000000ULL
 #define IEEE80211_RECIPROCAL_SHIFT 32
 
+/* constants used for airtime queue limit */
+#define IEEE80211_AIRTIME_QUEUE_LIMIT 8000 /* 8 ms */
+#define IEEE80211_AIRTIME_OVERHEAD 100
+#define IEEE80211_AIRTIME_OVERHEAD_IFS 16
+#define IEEE80211_AIRTIME_MINRATE_RECIPROCAL (IEEE80211_RECIPROCAL_DIVISOR / 6000)
+
 /*
  * Some APs experience problems when working with U-APSD. Decreasing the
  * probability of that happening by using legacy mode for all ACs but VO isn't
@@ -1144,6 +1150,7 @@ struct ieee80211_local {
 	spinlock_t active_txq_lock[IEEE80211_NUM_ACS];
 	struct list_head active_txqs[IEEE80211_NUM_ACS];
 	u16 schedule_round[IEEE80211_NUM_ACS];
+	u32 airtime_queued[IEEE80211_NUM_ACS];
 
 	u16 airtime_flags;
 

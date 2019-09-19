@@ -711,6 +711,28 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
 		skb->wifi_acked = acked;
 	}
 
+	if (info->control.tx_time_est) {
+		u8 *qc, ac;
+		int tid;
+
+		if (ieee80211_is_data_qos(hdr->frame_control)) {
+			qc = ieee80211_get_qos_ctl(hdr);
+			tid = qc[0] & 0xf;
+			ac = ieee80211_ac_from_tid(tid);
+		} else {
+			ac = IEEE80211_AC_BE;
+		}
+
+		spin_lock_bh(&local->active_txq_lock[ac]);
+		/* sanity check to make sure we don't underflow */
+		if (WARN_ON_ONCE(info->control.tx_time_est > local->airtime_queued[ac]))
+			local->airtime_queued[ac] = 0;
+		else
+			local->airtime_queued[ac] -= info->control.tx_time_est;
+		spin_unlock_bh(&local->active_txq_lock[ac]);
+
+	}
+
 	ieee80211_led_tx(local);
 
 	if (skb_has_frag_list(skb)) {

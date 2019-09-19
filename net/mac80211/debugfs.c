@@ -148,6 +148,29 @@ static const struct file_operations aqm_ops = {
 	.llseek = default_llseek,
 };
 
+static ssize_t airtime_queued_read(struct file *file,
+				   char __user *user_buf,
+				   size_t count,
+				   loff_t *ppos)
+{
+	struct ieee80211_local *local = file->private_data;
+	char buf[32 * IEEE80211_NUM_ACS], *p = buf;
+	u8 ac;
+
+	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++)
+		p += scnprintf(p, sizeof(buf)+buf-p, "AC%u: %u\n", ac,
+			       local->airtime_queued[ac]);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, p - buf);
+
+}
+
+static const struct file_operations airtime_queued_ops = {
+	.read = airtime_queued_read,
+	.open = simple_open,
+	.llseek = default_llseek,
+};
+
 static ssize_t force_tx_status_read(struct file *file,
 				    char __user *user_buf,
 				    size_t count,
@@ -440,6 +463,7 @@ void debugfs_hw_add(struct ieee80211_local *local)
 
 	debugfs_create_u16("airtime_flags", 0600,
 			   phyd, &local->airtime_flags);
+	DEBUGFS_ADD(airtime_queued);
 
 	statsd = debugfs_create_dir("statistics", phyd);
 
