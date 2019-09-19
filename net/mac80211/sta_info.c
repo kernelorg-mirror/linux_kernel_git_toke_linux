@@ -2481,3 +2481,12 @@ void ieee80211_sta_set_expected_throughput(struct ieee80211_sta *pubsta,
 
 	sta_update_codel_params(sta, thr);
 }
+
+void ieee80211_sta_set_last_tx_bitrate(struct ieee80211_sta *pubsta,
+				       u32 rate)
+{
+	struct sta_info *sta = container_of(pubsta, struct sta_info, sta);
+
+	sta->last_tx_bitrate = rate;
+	sta->last_tx_bitrate_reciprocal = ((u64)IEEE80211_RECIPROCAL_DIVISOR / rate);
+}

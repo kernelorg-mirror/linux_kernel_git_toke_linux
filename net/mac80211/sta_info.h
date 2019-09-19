@@ -617,6 +617,8 @@ struct sta_info {
 	const struct ieee80211_cipher_scheme *cipher_scheme;
 
 	struct codel_params cparams;
+	u32 last_tx_bitrate;
+	u64 last_tx_bitrate_reciprocal;
 
 	u8 reserved_tid;
 

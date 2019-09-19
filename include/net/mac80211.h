@@ -4530,6 +4530,16 @@ void ieee80211_sta_set_expected_throughput(struct ieee80211_sta *pubsta,
 					   u32 thr);
 
 /**
+ * ieee80211_sta_set_last_tx_bitrate - set last tx rate for station
+ *
+ * This sets the last TX bitrate for a given station.
+ *
+ * @sta: Pointer to the station
+ * @bitrate: Bitrate in kbps
+ */
+void ieee80211_sta_set_last_tx_bitrate(struct ieee80211_sta *sta, u32 bitrate);
+
+/**
  * ieee80211_tx_rate_update - transmit rate update callback
  *
  * Drivers should call this functions with a non-NULL pub sta

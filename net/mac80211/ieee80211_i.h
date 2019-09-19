@@ -59,6 +59,10 @@ struct ieee80211_local;
 /* power level hasn't been configured (or set to automatic) */
 #define IEEE80211_UNSET_POWER_LEVEL	INT_MIN
 
+/* constants for calculating reciprocals to avoid division in fast path */
+#define IEEE80211_RECIPROCAL_DIVISOR 0x100000000ULL
+#define IEEE80211_RECIPROCAL_SHIFT 32
+
 /*
  * Some APs experience problems when working with U-APSD. Decreasing the
  * probability of that happening by using legacy mode for all ACs but VO isn't
