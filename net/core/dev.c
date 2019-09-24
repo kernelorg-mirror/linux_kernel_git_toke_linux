@@ -8177,8 +8177,14 @@ static int dev_xdp_install(struct net_device *dev, bpf_op_t bpf_op,
 
 static void dev_xdp_uninstall(struct net_device *dev)
 {
+	struct bpf_map *chain_map = NULL;
 	struct netdev_bpf xdp;
 	bpf_op_t ndo_bpf;
+
+	/* Remove chain map */
+	rcu_swap_protected(dev->xdp_chain_map, chain_map, 1);
+	if(chain_map)
+		bpf_map_put_with_uref(chain_map);
 
 	/* Remove generic XDP */
 	WARN_ON(dev_xdp_install(dev, generic_xdp_install, NULL, 0, NULL));
@@ -8207,15 +8213,17 @@ static void dev_xdp_uninstall(struct net_device *dev)
  *	dev_change_xdp_fd - set or clear a bpf program for a device rx path
  *	@dev: device
  *	@extack: netlink extended ack
- *	@fd: new program fd or negative value to clear
+ *	@prog_fd: new program fd or negative value to clear
+ *	@chain_map_fd: new chain map fd or negative value to clear
  *	@flags: xdp-related flags
  *
  *	Set or clear a bpf program for a device
  */
 int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
-		      int fd, u32 flags)
+		      int prog_fd, int chain_map_fd, u32 flags)
 {
 	const struct net_device_ops *ops = dev->netdev_ops;
+	struct bpf_map *chain_map = NULL;
 	enum bpf_netdev_command query;
 	struct bpf_prog *prog = NULL;
 	bpf_op_t bpf_op, bpf_chk;
@@ -8237,7 +8245,7 @@ int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
 	if (bpf_op == bpf_chk)
 		bpf_chk = generic_xdp_install;
 
-	if (fd >= 0) {
+	if (prog_fd >= 0) {
 		u32 prog_id;
 
 		if (!offload && __dev_xdp_query(dev, bpf_chk, XDP_QUERY_PROG)) {
@@ -8251,7 +8259,7 @@ int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
 			return -EBUSY;
 		}
 
-		prog = bpf_prog_get_type_dev(fd, BPF_PROG_TYPE_XDP,
+		prog = bpf_prog_get_type_dev(prog_fd, BPF_PROG_TYPE_XDP,
 					     bpf_op == ops->ndo_bpf);
 		if (IS_ERR(prog))
 			return PTR_ERR(prog);
@@ -8267,13 +8275,35 @@ int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
 			return 0;
 		}
 	} else {
+		if (chain_map_fd >= 0)
+			return -EINVAL;
+
 		if (!__dev_xdp_query(dev, bpf_op, query))
 			return 0;
 	}
 
+	if (chain_map_fd >= 0) {
+		chain_map = bpf_map_get_with_uref(chain_map_fd);
+		if (IS_ERR(chain_map))
+			return PTR_ERR(chain_map);
+
+		if (chain_map->map_type != BPF_MAP_TYPE_XDP_CHAIN) {
+			NL_SET_ERR_MSG(extack, "invalid chain map type");
+			bpf_map_put_with_uref(chain_map);
+			return -EINVAL;
+		}
+	}
+
 	err = dev_xdp_install(dev, bpf_op, extack, flags, prog);
-	if (err < 0 && prog)
-		bpf_prog_put(prog);
+	if (err < 0) {
+		if (prog)
+			bpf_prog_put(prog);
+	} else {
+		rcu_swap_protected(dev->xdp_chain_map, chain_map, 1);
+	}
+
+	if(chain_map)
+		bpf_map_put_with_uref(chain_map);
 
 	return err;
 }

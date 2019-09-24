@@ -1427,6 +1427,7 @@ static int rtnl_xdp_report_one(struct sk_buff *skb, struct net_device *dev,
 
 static int rtnl_xdp_fill(struct sk_buff *skb, struct net_device *dev)
 {
+	struct bpf_map *chain_map;
 	struct nlattr *xdp;
 	u32 prog_id;
 	int err;
@@ -1457,6 +1458,13 @@ static int rtnl_xdp_fill(struct sk_buff *skb, struct net_device *dev)
 
 	if (prog_id && mode != XDP_ATTACHED_MULTI) {
 		err = nla_put_u32(skb, IFLA_XDP_PROG_ID, prog_id);
+		if (err)
+			goto err_cancel;
+	}
+
+	chain_map = rcu_dereference(dev->xdp_chain_map);
+	if (chain_map) {
+		err = nla_put_u32(skb, IFLA_XDP_CHAIN_MAP_ID, chain_map->id);
 		if (err)
 			goto err_cancel;
 	}
@@ -2756,12 +2764,27 @@ static int do_setlink(const struct sk_buff *skb,
 		}
 
 		if (xdp[IFLA_XDP_FD]) {
+			int chain_map_fd = -1;
+
+			if (xdp[IFLA_XDP_CHAIN_MAP_FD]) {
+				chain_map_fd = nla_get_s32(xdp[IFLA_XDP_CHAIN_MAP_FD]);
+			} else if (dev->xdp_chain_map) {
+				NL_SET_ERR_MSG(extack, "no chain map attribute, but chain map loaded");
+				err = -EINVAL;
+				goto errout;
+			}
+
 			err = dev_change_xdp_fd(dev, extack,
 						nla_get_s32(xdp[IFLA_XDP_FD]),
+						chain_map_fd,
 						xdp_flags);
 			if (err)
 				goto errout;
 			status |= DO_SETLINK_NOTIFY;
+		} else if (xdp[IFLA_XDP_CHAIN_MAP_FD]) {
+			err = -EINVAL;
+			NL_SET_ERR_MSG(extack, "chain map attribute invalid without prog fd");
+			goto errout;
 		}
 	}
 
