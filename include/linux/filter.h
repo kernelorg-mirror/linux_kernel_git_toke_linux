@@ -693,6 +693,7 @@ static inline u32 bpf_prog_run_clear_cb(const struct bpf_prog *prog,
 	return res;
 }
 
+#define BPF_XDP_MAX_CHAIN_CALLS 32
 static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 					    struct xdp_buff *xdp)
 {
@@ -702,7 +703,30 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	 * already takes rcu_read_lock() when fetching the program, so
 	 * it's not necessary here anymore.
 	 */
-	return BPF_PROG_RUN(prog, xdp);
+
+	int i = BPF_XDP_MAX_CHAIN_CALLS;
+	struct bpf_map *chain_map;
+	u32 ret;
+
+	chain_map = rcu_dereference(xdp->rxq->dev->xdp_chain_map);
+	if (!chain_map)
+		return BPF_PROG_RUN(prog, xdp);
+
+	do {
+		if (!--i) {
+			ret = XDP_ABORTED;
+			goto out;
+		}
+
+		ret = BPF_PROG_RUN(prog, xdp);
+		if (ret == XDP_ABORTED)
+			goto out;
+
+		prog = bpf_xdp_chain_map_get_prog(chain_map, prog->aux->id, ret);
+	} while(prog);
+
+out:
+	return ret;
 }
 
 static inline u32 bpf_prog_insn_size(const struct bpf_prog *prog)
