@@ -778,6 +778,8 @@ static int map_lookup_elem(union bpf_attr *attr)
 		value_size = round_up(map->value_size, 8) * num_possible_cpus();
 	else if (IS_FD_MAP(map))
 		value_size = sizeof(u32);
+	else if (map->map_type == BPF_MAP_TYPE_XDP_CHAIN)
+		value_size = sizeof(struct xdp_chain_acts);
 	else
 		value_size = map->value_size;
 
@@ -806,6 +808,8 @@ static int map_lookup_elem(union bpf_attr *attr)
 		err = bpf_fd_array_map_lookup_elem(map, key, value);
 	} else if (IS_FD_HASH(map)) {
 		err = bpf_fd_htab_map_lookup_elem(map, key, value);
+	} else if (map->map_type == BPF_MAP_TYPE_XDP_CHAIN) {
+		err = bpf_xdp_chain_map_lookup_elem(map, key, value);
 	} else if (map->map_type == BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
 		err = bpf_fd_reuseport_array_lookup_elem(map, key, value);
 	} else if (map->map_type == BPF_MAP_TYPE_QUEUE ||
@@ -908,6 +912,8 @@ static int map_update_elem(union bpf_attr *attr)
 	    map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY ||
 	    map->map_type == BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE)
 		value_size = round_up(map->value_size, 8) * num_possible_cpus();
+	else if (map->map_type == BPF_MAP_TYPE_XDP_CHAIN)
+		value_size = sizeof(struct xdp_chain_acts);
 	else
 		value_size = map->value_size;
 
@@ -953,6 +959,11 @@ static int map_update_elem(union bpf_attr *attr)
 		rcu_read_lock();
 		err = bpf_fd_htab_map_update_elem(map, f.file, key, value,
 						  attr->flags);
+		rcu_read_unlock();
+	} else if (map->map_type == BPF_MAP_TYPE_XDP_CHAIN) {
+		rcu_read_lock();
+		err = bpf_xdp_chain_map_update_elem(map, key, value,
+						    attr->flags);
 		rcu_read_unlock();
 	} else if (map->map_type == BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
 		/* rcu_read_lock() is not needed */

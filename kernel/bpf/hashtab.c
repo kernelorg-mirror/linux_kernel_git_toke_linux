@@ -1510,3 +1510,156 @@ const struct bpf_map_ops htab_of_maps_map_ops = {
 	.map_gen_lookup = htab_of_map_gen_lookup,
 	.map_check_btf = map_check_no_btf,
 };
+
+struct xdp_chain_table {
+	struct bpf_prog *wildcard_act;
+	struct bpf_prog *act[XDP_ACT_MAX];
+};
+
+static int xdp_chain_map_alloc_check(union bpf_attr *attr)
+{
+	BUILD_BUG_ON(sizeof(struct xdp_chain_table) / sizeof(void *) !=
+		     sizeof(struct xdp_chain_acts) / sizeof(u32));
+
+	if (attr->key_size != sizeof(u32) ||
+	    attr->value_size != sizeof(struct xdp_chain_acts))
+		return -EINVAL;
+
+	attr->value_size = sizeof(struct xdp_chain_table);
+	return htab_map_alloc_check(attr);
+}
+
+struct bpf_prog *bpf_xdp_chain_map_get_prog(struct bpf_map *map,
+					    u32 prev_id,
+					    enum xdp_action action)
+{
+	struct xdp_chain_table *tab;
+	void *ptr;
+
+	ptr = htab_map_lookup_elem(map, &prev_id);
+
+	if (!ptr)
+		return NULL;
+
+	tab = READ_ONCE(ptr);
+	return tab->act[action - 1] ?: tab->wildcard_act;
+}
+EXPORT_SYMBOL_GPL(bpf_xdp_chain_map_get_prog);
+
+/* only called from syscall */
+int bpf_xdp_chain_map_lookup_elem(struct bpf_map *map, void *key, void *value)
+{
+	struct xdp_chain_acts *act = value;
+	struct xdp_chain_table *tab;
+	void *ptr;
+	u32 *cur;
+	int i;
+
+	ptr = htab_map_lookup_elem(map, key);
+	if (!ptr)
+		return -ENOENT;
+
+	tab = READ_ONCE(ptr);
+
+	if (tab->wildcard_act)
+		act->wildcard_act = tab->wildcard_act->aux->id;
+
+	cur = &act->drop_act;
+	for (i = 0; i < XDP_ACT_MAX; i++, cur++)
+		if(tab->act[i])
+			*cur = tab->act[i]->aux->id;
+
+	return 0;
+}
+
+static void *xdp_chain_map_get_ptr(int fd)
+{
+	struct bpf_prog *prog = bpf_prog_get(fd);
+
+	if (IS_ERR(prog))
+		return prog;
+
+	if (prog->type != BPF_PROG_TYPE_XDP ||
+	    bpf_prog_is_dev_bound(prog->aux)) {
+		bpf_prog_put(prog);
+		return ERR_PTR(-EINVAL);
+	}
+
+	return prog;
+}
+
+static void xdp_chain_map_put_ptrs(void *value)
+{
+	struct xdp_chain_table *tab = value;
+	int i;
+
+	for (i = 0; i < XDP_ACT_MAX; i++)
+		if (tab->act[i])
+			bpf_prog_put(tab->act[i]);
+
+	if (tab->wildcard_act)
+		bpf_prog_put(tab->wildcard_act);
+}
+
+/* only called from syscall */
+int bpf_xdp_chain_map_update_elem(struct bpf_map *map, void *key, void *value,
+				  u64 map_flags)
+{
+	struct xdp_chain_acts *act = value;
+	struct xdp_chain_table tab = {};
+	u32 lookup_key = *((u32*)key);
+	u32 *cur = &act->drop_act;
+	bool found_val = false;
+	int ret, i;
+	void *ptr;
+
+	if (!lookup_key)
+		return -EINVAL;
+
+	if (act->wildcard_act) {
+		ptr = xdp_chain_map_get_ptr(act->wildcard_act);
+		if (IS_ERR(ptr))
+			return PTR_ERR(ptr);
+		tab.wildcard_act = ptr;
+		found_val = true;
+	}
+
+	for (i = 0; i < XDP_ACT_MAX; i++, cur++) {
+		if (*cur) {
+			ptr = xdp_chain_map_get_ptr(*cur);
+			if (IS_ERR(ptr)) {
+				ret = PTR_ERR(ptr);
+				goto out_err;
+			}
+			tab.act[i] = ptr;
+			found_val = true;
+		}
+	}
+
+	if (!found_val) {
+		ret = -EINVAL;
+		goto out_err;
+	}
+
+	ret = htab_map_update_elem(map, key, &tab, map_flags);
+	if (ret)
+		goto out_err;
+
+	return ret;
+
+out_err:
+	xdp_chain_map_put_ptrs(&tab);
+
+	return ret;
+}
+
+
+const struct bpf_map_ops xdp_chain_map_ops = {
+	.map_alloc_check = xdp_chain_map_alloc_check,
+	.map_alloc = htab_map_alloc,
+	.map_free = fd_htab_map_free,
+	.map_get_next_key = htab_map_get_next_key,
+	.map_delete_elem = htab_map_delete_elem,
+	.map_fd_put_value = xdp_chain_map_put_ptrs,
+	.map_check_btf = map_check_no_btf,
+};

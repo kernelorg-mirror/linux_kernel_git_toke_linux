@@ -689,6 +689,15 @@ int bpf_fd_htab_map_update_elem(struct bpf_map *map, struct file *map_file,
 				void *key, void *value, u64 map_flags);
 int bpf_fd_htab_map_lookup_elem(struct bpf_map *map, void *key, u32 *value);
 
+int bpf_xdp_chain_map_update_elem(struct bpf_map *map, void *key, void *value,
+				  u64 map_flags);
+int bpf_xdp_chain_map_lookup_elem(struct bpf_map *map, void *key, void *value);
+struct bpf_prog *bpf_xdp_chain_map_get_prog(struct bpf_map *map,
+					    u32 prev_id,
+					    enum xdp_action action);
+
+
+
 int bpf_get_file_flag(int flags);
 int bpf_check_uarg_tail_zero(void __user *uaddr, size_t expected_size,
 			     size_t actual_size);

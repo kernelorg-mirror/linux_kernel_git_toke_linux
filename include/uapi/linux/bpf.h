@@ -136,6 +136,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_STACK,
 	BPF_MAP_TYPE_SK_STORAGE,
 	BPF_MAP_TYPE_DEVMAP_HASH,
+	BPF_MAP_TYPE_XDP_CHAIN,
 };
 
 /* Note that tracing related programs such as
@@ -3153,6 +3154,17 @@ enum xdp_action {
 	XDP_PASS,
 	XDP_TX,
 	XDP_REDIRECT,
+
+	__XDP_ACT_MAX /* leave at end */
+};
+#define XDP_ACT_MAX	(__XDP_ACT_MAX - 1)
+
+struct xdp_chain_acts {
+	__u32 wildcard_act;
+	__u32 drop_act;
+	__u32 pass_act;
+	__u32 tx_act;
+	__u32 redirect_act;
 };
 
 /* user accessible metadata for XDP packet hook
