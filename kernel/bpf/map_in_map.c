@@ -114,6 +114,13 @@ void bpf_map_fd_put_ptr(void *ptr)
 	bpf_map_put(ptr);
 }
 
+void bpf_map_fd_put_value(void *value)
+{
+	void **ptr = value;
+
+	bpf_map_fd_put_ptr(*ptr);
+}
+
 u32 bpf_map_fd_sys_lookup_elem(void *ptr)
 {
 	return ((struct bpf_map *)ptr)->id;

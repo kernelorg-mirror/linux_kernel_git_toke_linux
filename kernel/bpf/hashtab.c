@@ -87,11 +87,6 @@ static inline void __percpu *htab_elem_get_ptr(struct htab_elem *l, u32 key_size
 	return *(void __percpu **)(l->key + key_size);
 }
 
-static void *fd_htab_map_get_ptr(const struct bpf_map *map, struct htab_elem *l)
-{
-	return *(void **)(l->key + roundup(map->key_size, 8));
-}
-
 static struct htab_elem *get_htab_elem(struct bpf_htab *htab, int i)
 {
 	return (struct htab_elem *) (htab->elems + i * htab->elem_size);
@@ -679,10 +674,10 @@ static void free_htab_elem(struct bpf_htab *htab, struct htab_elem *l)
 {
 	struct bpf_map *map = &htab->map;
 
-	if (map->ops->map_fd_put_ptr) {
-		void *ptr = fd_htab_map_get_ptr(map, l);
+	if (map->ops->map_fd_put_value) {
+		void *value = l->key + round_up(map->key_size, 8);
 
-		map->ops->map_fd_put_ptr(ptr);
+		map->ops->map_fd_put_value(value);
 	}
 
 	if (htab_is_prealloc(htab)) {
@@ -1400,9 +1395,9 @@ static void fd_htab_map_free(struct bpf_map *map)
 		head = select_bucket(htab, i);
 
 		hlist_nulls_for_each_entry_safe(l, n, head, hash_node) {
-			void *ptr = fd_htab_map_get_ptr(map, l);
+			void *value = l->key + round_up(map->key_size, 8);
 
-			map->ops->map_fd_put_ptr(ptr);
+			map->ops->map_fd_put_value(value);
 		}
 	}
 
@@ -1510,6 +1505,7 @@ const struct bpf_map_ops htab_of_maps_map_ops = {
 	.map_delete_elem = htab_map_delete_elem,
 	.map_fd_get_ptr = bpf_map_fd_get_ptr,
 	.map_fd_put_ptr = bpf_map_fd_put_ptr,
+	.map_fd_put_value = bpf_map_fd_put_value,
 	.map_fd_sys_lookup_elem = bpf_map_fd_sys_lookup_elem,
 	.map_gen_lookup = htab_of_map_gen_lookup,
 	.map_check_btf = map_check_no_btf,
