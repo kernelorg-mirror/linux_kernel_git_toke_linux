@@ -25,6 +25,7 @@ struct xdp_id_md {
 	int ifindex;
 	__u32 flags;
 	__u32 id;
+	__u32 chain_map_id;
 };
 
 int libbpf_netlink_open(__u32 *nl_pid)
@@ -128,7 +129,8 @@ done:
 	return ret;
 }
 
-int bpf_set_link_xdp_fd(int ifindex, int fd, __u32 flags)
+static int __bpf_set_link_xdp_fd(int ifindex, int *prog_fd, int *chain_map_fd,
+				 __u32 flags)
 {
 	int sock, seq = 0, ret;
 	struct nlattr *nla, *nla_xdp;
@@ -162,8 +164,18 @@ int bpf_set_link_xdp_fd(int ifindex, int fd, __u32 flags)
 	nla_xdp = (struct nlattr *)((char *)nla + nla->nla_len);
 	nla_xdp->nla_type = IFLA_XDP_FD;
 	nla_xdp->nla_len = NLA_HDRLEN + sizeof(int);
-	memcpy((char *)nla_xdp + NLA_HDRLEN, &fd, sizeof(fd));
+	memcpy((char *)nla_xdp + NLA_HDRLEN, prog_fd, sizeof(*prog_fd));
 	nla->nla_len += nla_xdp->nla_len;
+
+	if (chain_map_fd) {
+		/* add XDP chain map */
+		nla_xdp = (struct nlattr *)((char *)nla + nla->nla_len);
+		nla_xdp->nla_type = IFLA_XDP_CHAIN_MAP_FD;
+		nla_xdp->nla_len = NLA_HDRLEN + sizeof(int);
+		memcpy((char *)nla_xdp + NLA_HDRLEN, chain_map_fd,
+		       sizeof(*chain_map_fd));
+		nla->nla_len += nla_xdp->nla_len;
+	}
 
 	/* if user passed in any flags, add those too */
 	if (flags) {
@@ -185,6 +197,17 @@ int bpf_set_link_xdp_fd(int ifindex, int fd, __u32 flags)
 cleanup:
 	close(sock);
 	return ret;
+}
+
+int bpf_set_link_xdp_chain(int ifindex, int prog_fd, int chain_map_fd,
+			   __u32 flags)
+{
+	return __bpf_set_link_xdp_fd(ifindex, &prog_fd, &chain_map_fd, flags);
+}
+
+int bpf_set_link_xdp_fd(int ifindex, int fd, __u32 flags)
+{
+	return __bpf_set_link_xdp_fd(ifindex, &fd, NULL, flags);
 }
 
 static int __dump_link_nlmsg(struct nlmsghdr *nlh,
@@ -247,10 +270,13 @@ static int get_xdp_id(void *cookie, void *msg, struct nlattr **tb)
 
 	xdp_id->id = libbpf_nla_getattr_u32(xdp_tb[xdp_attr]);
 
+	if (xdp_tb[IFLA_XDP_CHAIN_MAP_ID])
+		xdp_id->chain_map_id = libbpf_nla_getattr_u32(xdp_tb[IFLA_XDP_CHAIN_MAP_ID]);
+
 	return 0;
 }
 
-int bpf_get_link_xdp_id(int ifindex, __u32 *prog_id, __u32 flags)
+static int __bpf_get_link_xdp_id(int ifindex, __u32 *prog_id, __u32 *chain_map_id, __u32 flags)
 {
 	struct xdp_id_md xdp_id = {};
 	int sock, ret;
@@ -274,11 +300,26 @@ int bpf_get_link_xdp_id(int ifindex, __u32 *prog_id, __u32 flags)
 	xdp_id.flags = flags;
 
 	ret = libbpf_nl_get_link(sock, nl_pid, get_xdp_id, &xdp_id);
-	if (!ret)
+	if (!ret) {
 		*prog_id = xdp_id.id;
+
+		if (chain_map_id)
+			*chain_map_id = xdp_id.chain_map_id;
+	}
 
 	close(sock);
 	return ret;
+}
+
+int bpf_get_link_xdp_id(int ifindex, __u32 *prog_id, __u32 flags)
+{
+	return __bpf_get_link_xdp_id(ifindex, prog_id, NULL, flags);
+}
+
+int bpf_get_link_xdp_chain(int ifindex, __u32 *prog_id, __u32 *chain_map_id,
+			   __u32 flags)
+{
+	return __bpf_get_link_xdp_id(ifindex, prog_id, chain_map_id, flags);
 }
 
 int libbpf_nl_get_link(int sock, unsigned int nl_pid,

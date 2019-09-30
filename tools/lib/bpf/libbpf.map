@@ -192,4 +192,6 @@ LIBBPF_0.0.5 {
 } LIBBPF_0.0.4;
 
 LIBBPF_0.0.6 {
+		bpf_set_link_xdp_chain;
+		bpf_get_link_xdp_chain;
 } LIBBPF_0.0.5;
