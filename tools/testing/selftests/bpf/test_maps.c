@@ -523,6 +523,50 @@ static void test_devmap_hash(unsigned int task, void *data)
 	close(fd);
 }
 
+static void test_xdp_chain_map(unsigned int task, void *data)
+{
+	const char *file = "./xdp_dummy.o";
+	struct xdp_chain_acts acts = {};
+	struct bpf_object *obj;
+	int map_fd, prog_fd;
+	__u32 key = 0;
+	int err;
+
+	map_fd = bpf_create_map(BPF_MAP_TYPE_XDP_CHAIN, sizeof(key), sizeof(acts),
+			    2, 0);
+	if (map_fd < 0) {
+		printf("Failed to create xdp_chain map '%s'!\n", strerror(errno));
+		exit(1);
+	}
+
+	err = bpf_prog_load(file, BPF_PROG_TYPE_XDP, &obj, &prog_fd);
+	if (err < 0) {
+		printf("Failed to load dummy prog: '%s'!\n", strerror(errno));
+		exit(1);
+	}
+
+	/* Try inserting NULL key/value - should fail */
+	assert(bpf_map_update_elem(map_fd, &key, &acts, 0) == -1 && errno == EINVAL);
+
+	/* Try inserting NULL value - should fail */
+	key = 1;
+	assert(bpf_map_update_elem(map_fd, &key, &acts, 0) == -1 && errno == EINVAL);
+
+	/* Try a real insert - should succeed */
+	acts.wildcard_act = prog_fd;
+	assert(bpf_map_update_elem(map_fd, &key, &acts, 0) == 0);
+
+	/* Replace with full table */
+	acts.drop_act = acts.pass_act = acts.tx_act = acts.redirect_act = prog_fd;
+	assert(bpf_map_update_elem(map_fd, &key, &acts, 0) == 0);
+
+	/* Try deleting element */
+	assert(bpf_map_delete_elem(map_fd, &key) == 0);
+
+	bpf_object__close(obj);
+	close(map_fd);
+}
+
 static void test_queuemap(unsigned int task, void *data)
 {
 	const int MAP_SIZE = 32;
@@ -1700,6 +1744,7 @@ static void run_all_tests(void)
 
 	test_devmap(0, NULL);
 	test_devmap_hash(0, NULL);
+	test_xdp_chain_map(0, NULL);
 	test_sockmap(0, NULL);
 
 	test_map_large();
