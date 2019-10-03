@@ -2112,6 +2112,79 @@ static int bpf_prog_test_run(const union bpf_attr *attr,
 	return ret;
 }
 
+#define BPF_PROG_CHAIN_LAST_FIELD next_prog_id
+
+static int bpf_prog_chain(int cmd, const union bpf_attr *attr,
+			  union bpf_attr __user *uattr)
+{
+	struct bpf_prog *prog, *next_prog, *old_prog;
+	struct bpf_array *array;
+	int ret = -EOPNOTSUPP;
+	u32 index, prog_id;
+
+	if (CHECK_ATTR(BPF_PROG_CHAIN))
+		return -EINVAL;
+
+	/* Index 0 is wildcard, encoded as ~0 by userspace */
+	if (attr->retcode == ((u32) ~0))
+		index = 0;
+	else
+		index = attr->retcode + 1;
+
+	if (index >= BPF_NUM_CHAIN_SLOTS)
+		return -E2BIG;
+
+	prog = bpf_prog_get(attr->prev_prog_fd);
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+
+	/* If no chain_progs array is set, that's because the chain call flag
+	 * was not set on program load, and so we can't support chain calls.
+	 */
+	if (!prog->aux->chain_progs)
+		goto out;
+
+	array = prog->aux->chain_progs;
+
+	switch (cmd) {
+	case BPF_PROG_CHAIN_ADD:
+		next_prog = bpf_prog_get(attr->next_prog_fd);
+		if (IS_ERR(next_prog)) {
+			ret = PTR_ERR(next_prog);
+			break;
+		}
+		old_prog = xchg(array->ptrs + index, next_prog);
+		if (old_prog)
+			bpf_prog_put(old_prog);
+		ret = 0;
+		break;
+	case BPF_PROG_CHAIN_DEL:
+		old_prog = xchg(array->ptrs + index, NULL);
+		if (old_prog) {
+			bpf_prog_put(old_prog);
+			ret = 0;
+		} else {
+			ret = -ENOENT;
+		}
+		break;
+	case BPF_PROG_CHAIN_GET:
+		old_prog = READ_ONCE(*(array->ptrs + index));
+		if (old_prog) {
+			prog_id = old_prog->aux->id;
+			if (put_user(prog_id, &uattr->next_prog_id))
+				ret = -EFAULT;
+			else
+				ret = 0;
+		} else
+			ret = -ENOENT;
+		break;
+	}
+
+out:
+	bpf_prog_put(prog);
+	return ret;
+}
+
 #define BPF_OBJ_GET_NEXT_ID_LAST_FIELD next_id
 
 static int bpf_obj_get_next_id(const union bpf_attr *attr,
@@ -2883,6 +2956,11 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 	case BPF_PROG_TEST_RUN:
 		err = bpf_prog_test_run(&attr, uattr);
+		break;
+	case BPF_PROG_CHAIN_ADD:
+	case BPF_PROG_CHAIN_DEL:
+	case BPF_PROG_CHAIN_GET:
+		err = bpf_prog_chain(cmd, &attr, uattr);
 		break;
 	case BPF_PROG_GET_NEXT_ID:
 		err = bpf_obj_get_next_id(&attr, uattr,
