@@ -192,4 +192,7 @@ LIBBPF_0.0.5 {
 } LIBBPF_0.0.4;
 
 LIBBPF_0.0.6 {
+		bpf_prog_chain_add;
+		bpf_prog_chain_del;
+		bpf_prog_chain_get;
 } LIBBPF_0.0.5;

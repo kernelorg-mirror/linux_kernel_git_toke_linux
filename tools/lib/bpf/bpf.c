@@ -703,3 +703,37 @@ int bpf_task_fd_query(int pid, int fd, __u32 flags, char *buf, __u32 *buf_len,
 
 	return err;
 }
+
+int bpf_prog_chain_add(int prev_prog_fd, __u32 retcode, int next_prog_fd) {
+	union bpf_attr attr = {};
+
+	attr.prev_prog_fd = prev_prog_fd;
+	attr.next_prog_fd = next_prog_fd;
+	attr.retcode = retcode;
+
+	return sys_bpf(BPF_PROG_CHAIN_ADD, &attr, sizeof(attr));
+}
+
+int bpf_prog_chain_del(int prev_prog_fd, __u32 retcode) {
+	union bpf_attr attr = {};
+
+	attr.prev_prog_fd = prev_prog_fd;
+	attr.retcode = retcode;
+
+	return sys_bpf(BPF_PROG_CHAIN_DEL, &attr, sizeof(attr));
+}
+
+int bpf_prog_chain_get(int prev_prog_fd, __u32 retcode, __u32 *prog_id) {
+	union bpf_attr attr = {};
+	int err;
+
+	attr.prev_prog_fd = prev_prog_fd;
+	attr.retcode = retcode;
+
+	err = sys_bpf(BPF_PROG_CHAIN_GET, &attr, sizeof(attr));
+
+	if (!err)
+		*prog_id = attr.next_prog_id;
+
+	return err;
+}
