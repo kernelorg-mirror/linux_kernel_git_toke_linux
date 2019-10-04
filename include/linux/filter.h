@@ -21,6 +21,7 @@
 #include <linux/kallsyms.h>
 #include <linux/if_vlan.h>
 #include <linux/vmalloc.h>
+#include <linux/nospec.h>
 
 #include <net/sch_generic.h>
 
@@ -528,6 +529,7 @@ struct bpf_prog {
 				is_func:1,	/* program is a bpf function */
 				kprobe_override:1, /* Do we override a kprobe? */
 				has_callchain_buf:1, /* callchain buffer allocated? */
+				chain_calls:1, /* should this use the chain_call wrapper */
 				enforce_expected_attach_type:1; /* Enforce expected_attach_type checking at attach time */
 	enum bpf_prog_type	type;		/* Type of BPF program */
 	enum bpf_attach_type	expected_attach_type; /* For some prog types */
@@ -551,6 +553,30 @@ struct sk_filter {
 	struct bpf_prog	*prog;
 };
 
+#define BPF_MAX_CHAIN_CALLS 32
+static __always_inline unsigned int do_chain_calls(const struct bpf_prog *prog,
+						   const void *ctx)
+{
+	int i = BPF_MAX_CHAIN_CALLS;
+	int idx;
+	u32 ret;
+
+	do {
+		ret = (*(prog)->bpf_func)(ctx, prog->insnsi);
+
+		if (ret + 1 >= BPF_NUM_CHAIN_SLOTS) {
+			prog = prog->aux->chain_progs[0];
+			continue;
+		}
+		idx = ret + 1;
+		idx = array_index_nospec(idx, BPF_NUM_CHAIN_SLOTS);
+
+		prog = prog->aux->chain_progs[idx] ?: prog->aux->chain_progs[0];
+	} while (prog && --i);
+
+	return ret;
+}
+
 DECLARE_STATIC_KEY_FALSE(bpf_stats_enabled_key);
 
 #define BPF_PROG_RUN(prog, ctx)	({				\
@@ -559,14 +585,18 @@ DECLARE_STATIC_KEY_FALSE(bpf_stats_enabled_key);
 	if (static_branch_unlikely(&bpf_stats_enabled_key)) {	\
 		struct bpf_prog_stats *stats;			\
 		u64 start = sched_clock();			\
-		ret = (*(prog)->bpf_func)(ctx, (prog)->insnsi);	\
+		ret = prog->chain_calls ?			\
+			do_chain_calls(prog, ctx) :			\
+			 (*(prog)->bpf_func)(ctx, (prog)->insnsi);	\
 		stats = this_cpu_ptr(prog->aux->stats);		\
 		u64_stats_update_begin(&stats->syncp);		\
 		stats->cnt++;					\
 		stats->nsecs += sched_clock() - start;		\
 		u64_stats_update_end(&stats->syncp);		\
 	} else {						\
-		ret = (*(prog)->bpf_func)(ctx, (prog)->insnsi);	\
+		ret = prog->chain_calls ?				\
+			do_chain_calls(prog, ctx) :			\
+			 (*(prog)->bpf_func)(ctx, (prog)->insnsi);	\
 	}							\
 	ret; })
 

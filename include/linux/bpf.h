@@ -365,6 +365,8 @@ struct bpf_prog_stats {
 	struct u64_stats_sync syncp;
 };
 
+#define BPF_NUM_CHAIN_SLOTS 8
+
 struct bpf_prog_aux {
 	atomic_t refcnt;
 	u32 used_map_cnt;
@@ -383,6 +385,7 @@ struct bpf_prog_aux {
 	struct list_head ksym_lnode;
 	const struct bpf_prog_ops *ops;
 	struct bpf_map **used_maps;
+	struct bpf_prog *chain_progs[BPF_NUM_CHAIN_SLOTS];
 	struct bpf_prog *prog;
 	struct user_struct *user;
 	u64 load_time; /* ns since boottime */

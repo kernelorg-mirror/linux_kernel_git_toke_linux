@@ -288,6 +288,12 @@ enum bpf_attach_type {
 /* The verifier internal test flag. Behavior is undefined */
 #define BPF_F_TEST_STATE_FREQ	(1U << 3)
 
+/* Whether to enable chain call logic at program execution. If set, the program
+ * execution logic will check for and jump to chain call programs configured
+ * with the BPF_PROG_CHAIN_* commands to the bpf syscall.
+ */
+#define BPF_F_CHAIN_CALLS	(1U << 4)
+
 /* When BPF ldimm64's insn[0].src_reg != 0 then this can have
  * two extensions:
  *

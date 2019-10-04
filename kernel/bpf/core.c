@@ -254,6 +254,12 @@ struct bpf_prog *bpf_prog_realloc(struct bpf_prog *fp_old, unsigned int size,
 void __bpf_prog_free(struct bpf_prog *fp)
 {
 	if (fp->aux) {
+		int i;
+
+		for (i = 0; i < BPF_NUM_CHAIN_SLOTS; i++)
+			if (fp->aux->chain_progs[i])
+				bpf_prog_put(fp->aux->chain_progs[i]);
+
 		free_percpu(fp->aux->stats);
 		kfree(fp->aux);
 	}
