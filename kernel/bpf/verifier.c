@@ -9154,6 +9154,79 @@ patch_call_imm:
 	return 0;
 }
 
+static int bpf_inject_chain_calls(struct bpf_verifier_env *env)
+{
+	struct bpf_prog *prog = env->prog;
+	struct bpf_insn *insn = prog->insnsi;
+	int i, cnt, delta = 0, ret = -ENOMEM;
+	const int insn_cnt = prog->len;
+	struct bpf_array *prog_array;
+	struct bpf_prog *new_prog;
+	size_t array_size;
+
+	struct bpf_insn call_next[] = {
+		BPF_LD_IMM64(BPF_REG_2, 0),
+		/* Save real return value for later */
+		BPF_MOV64_REG(BPF_REG_6, BPF_REG_0),
+		/* First try tail call with index ret+1 */
+		BPF_MOV64_REG(BPF_REG_3, BPF_REG_0),
+		BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, 1),
+		BPF_RAW_INSN(BPF_JMP | BPF_TAIL_CALL, 0, 0, 0, 0),
+		/* If that doesn't work, try with index 0 (wildcard) */
+		BPF_MOV64_IMM(BPF_REG_3, 0),
+		BPF_RAW_INSN(BPF_JMP | BPF_TAIL_CALL, 0, 0, 0, 0),
+		/* Restore saved return value and exit */
+		BPF_MOV64_REG(BPF_REG_0, BPF_REG_6),
+		BPF_EXIT_INSN()
+	};
+
+	if (prog->aux->chain_progs)
+		return 0;
+
+	array_size = sizeof(*prog_array) + BPF_NUM_CHAIN_SLOTS * sizeof(void*);
+	prog_array = bpf_map_area_alloc(array_size, NUMA_NO_NODE);
+
+	if (!prog_array)
+		goto out_err;
+
+	prog_array->elem_size = sizeof(void*);
+	prog_array->map.max_entries = BPF_NUM_CHAIN_SLOTS;
+
+	call_next[0].imm = (u32)((u64) prog_array);
+	call_next[1].imm = ((u64) prog_array) >> 32;
+
+	for (i = 0; i < insn_cnt; i++, insn++) {
+		if (insn->code != (BPF_JMP | BPF_EXIT))
+			continue;
+
+		cnt = ARRAY_SIZE(call_next);
+
+		new_prog = bpf_patch_insn_data(env, i+delta, call_next, cnt);
+		if (!new_prog) {
+			goto out_err;
+		}
+
+		delta    += cnt - 1;
+		env->prog = prog = new_prog;
+		insn      = new_prog->insnsi + i + delta;
+	}
+
+	/* If we chain call into other programs, we cannot make any assumptions
+	 * since they can be replaced dynamically during runtime.
+	 */
+	prog->cb_access = 1;
+	env->prog->aux->stack_depth = MAX_BPF_STACK;
+	env->prog->aux->max_pkt_offset = MAX_PACKET_OFF;
+
+	prog->aux->chain_progs = prog_array;
+	return 0;
+
+out_err:
+	bpf_map_area_free(prog_array);
+	return ret;
+}
+
+
 static void free_states(struct bpf_verifier_env *env)
 {
 	struct bpf_verifier_state_list *sl, *sln;
@@ -9335,6 +9408,9 @@ skip_full_check:
 
 	if (ret == 0)
 		ret = fixup_bpf_calls(env);
+
+	if (ret == 0 && (attr->prog_flags & BPF_F_INJECT_CHAIN_CALLS))
+		ret = bpf_inject_chain_calls(env);
 
 	/* do 32-bit optimization after insn patching has done so those patched
 	 * insns could be handled correctly.

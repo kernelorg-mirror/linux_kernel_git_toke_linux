@@ -255,6 +255,16 @@ void __bpf_prog_free(struct bpf_prog *fp)
 {
 	if (fp->aux) {
 		free_percpu(fp->aux->stats);
+		if (fp->aux->chain_progs) {
+			struct bpf_array *array = fp->aux->chain_progs;
+			int i;
+
+			for (i = 0; i < BPF_NUM_CHAIN_SLOTS; i++)
+				if (array->ptrs[i])
+					bpf_prog_put(array->ptrs[i]);
+
+			bpf_map_area_free(array);
+		}
 		kfree(fp->aux);
 	}
 	vfree(fp);
