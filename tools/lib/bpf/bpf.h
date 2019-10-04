@@ -171,6 +171,10 @@ LIBBPF_API int bpf_task_fd_query(int pid, int fd, __u32 flags, char *buf,
 				 __u32 *buf_len, __u32 *prog_id, __u32 *fd_type,
 				 __u64 *probe_offset, __u64 *probe_addr);
 
+LIBBPF_API int bpf_prog_chain_add(int prev_prog_fd, __u32 retcode, int next_prog_fd);
+LIBBPF_API int bpf_prog_chain_del(int prev_prog_fd, __u32 retcode);
+LIBBPF_API int bpf_prog_chain_get(int prev_prog_fd, __u32 retcode, __u32 *prog_id);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
