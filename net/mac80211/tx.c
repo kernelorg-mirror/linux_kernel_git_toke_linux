@@ -3542,6 +3542,9 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 
 	WARN_ON_ONCE(softirq_count() == 0);
 
+	if (!ieee80211_txq_airtime_check(hw, txq))
+		return NULL;
+
 begin:
 	spin_lock_bh(&fq->lock);
 
@@ -3652,6 +3655,24 @@ begin:
 	}
 
 	IEEE80211_SKB_CB(skb)->control.vif = vif;
+
+	if (local->airtime_flags & AIRTIME_USE_AQL) {
+		u32 airtime;
+
+		airtime = ieee80211_calc_expected_tx_airtime(hw, vif, txq->sta,
+							     skb->len);
+		if (airtime) {
+			/* We only have 10 bits in tx_time_est, so store airtime
+			 * in increments of 4us and clamp the maximum to 2**12-1
+			 */
+			airtime = min_t(u32, airtime, 4095) & ~3U;
+			info->tx_time_est = airtime >> 2;
+			ieee80211_sta_update_pending_airtime(local, tx.sta,
+							     txq->ac, airtime,
+							     false);
+		}
+	}
+
 	return skb;
 
 out:

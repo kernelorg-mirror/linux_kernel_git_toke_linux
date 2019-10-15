@@ -676,6 +676,28 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
 	if (dropped)
 		acked = false;
 
+	if (info->tx_time_est) {
+		struct sta_info *sta = NULL, *s;
+		struct rhlist_head *tmp;
+
+		rcu_read_lock();
+
+		for_each_sta_info(local, hdr->addr1, s, tmp) {
+			/* skip wrong virtual interface */
+			if (!ether_addr_equal(hdr->addr2, s->sdata->vif.addr))
+				continue;
+
+			sta = s;
+			break;
+		}
+
+		ieee80211_sta_update_pending_airtime(local, sta,
+						     skb_get_queue_mapping(skb),
+						     info->tx_time_est << 2,
+						     true);
+		rcu_read_unlock();
+	}
+
 	if (info->flags & IEEE80211_TX_INTFL_MLME_CONN_TX) {
 		struct ieee80211_sub_if_data *sdata;
 
@@ -985,6 +1007,17 @@ static void __ieee80211_tx_status(struct ieee80211_hw *hw,
 					    NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
 			ieee80211_sta_register_airtime(&sta->sta, tid,
 						       info->status.tx_time, 0);
+
+		if (info->tx_time_est) {
+			/* Do this here to avoid the expensive lookup of the sta
+			 * in ieee80211_report_used_skb().
+			 */
+			ieee80211_sta_update_pending_airtime(local, sta,
+							     skb_get_queue_mapping(skb),
+							     info->tx_time_est << 2,
+							     true);
+			info->tx_time_est = 0;
+		}
 
 		if (ieee80211_hw_check(&local->hw, REPORTS_TX_ACK_STATUS)) {
 			if (info->flags & IEEE80211_TX_STAT_ACK) {
