@@ -3539,8 +3539,13 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 	struct ieee80211_tx_data tx;
 	ieee80211_tx_result r;
 	struct ieee80211_vif *vif = txq->vif;
+	u8 ac = txq->ac;
+	u32 airtime;
 
 	WARN_ON_ONCE(softirq_count() == 0);
+
+	if (!ieee80211_txq_airtime_check(hw, txq))
+		return NULL;
 
 begin:
 	spin_lock_bh(&fq->lock);
@@ -3652,6 +3657,17 @@ begin:
 	}
 
 	IEEE80211_SKB_CB(skb)->control.vif = vif;
+
+	if (local->airtime_flags & AIRTIME_USE_AQL) {
+		airtime = ieee80211_calc_expected_tx_airtime(hw, vif, txq->sta,
+							     skb->len + 38);
+		if (airtime) {
+			info->control.tx_time_est = airtime;
+			ieee80211_sta_update_pending_airtime(local, tx.sta, ac,
+							     airtime, false);
+		}
+	}
+
 	return skb;
 
 out:
