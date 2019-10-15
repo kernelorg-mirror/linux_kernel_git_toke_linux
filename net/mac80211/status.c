@@ -676,6 +676,33 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
 	if (dropped)
 		acked = false;
 
+	if (info->tx_time_est) {
+		struct ieee80211_sub_if_data *sdata;
+		struct sta_info *sta = NULL;
+		u8 *qc, ac;
+		int tid;
+
+		rcu_read_lock();
+
+		sdata = ieee80211_sdata_from_skb(local, skb);
+		if (sdata)
+			sta = sta_info_get_bss(sdata, skb_mac_header(skb));
+
+		if (ieee80211_is_data_qos(hdr->frame_control)) {
+			qc = ieee80211_get_qos_ctl(hdr);
+			tid = qc[0] & 0xf;
+			ac = ieee80211_ac_from_tid(tid);
+		} else {
+			ac = IEEE80211_AC_BE;
+		}
+
+		ieee80211_sta_update_pending_airtime(local, sta, ac,
+						     info->tx_time_est << 2,
+						     true);
+		rcu_read_unlock();
+
+	}
+
 	if (info->flags & IEEE80211_TX_INTFL_MLME_CONN_TX) {
 		struct ieee80211_sub_if_data *sdata;
 
@@ -928,6 +955,17 @@ static void __ieee80211_tx_status(struct ieee80211_hw *hw,
 			u8 *qc = ieee80211_get_qos_ctl(hdr);
 
 			tid = qc[0] & 0xf;
+		}
+
+		if (info->tx_time_est) {
+			/* Do this here to avoid the expensive lookup of the sta
+			 * in ieee80211_report_used_skb().
+			 */
+			ieee80211_sta_update_pending_airtime(local, sta,
+							     ieee80211_ac_from_tid(tid),
+							     info->tx_time_est << 2,
+							     true);
+			info->tx_time_est = 0;
 		}
 
 		if (!acked && ieee80211_is_back_req(fc)) {
