@@ -6434,4 +6434,18 @@ void ieee80211_nan_func_match(struct ieee80211_vif *vif,
 			      struct cfg80211_nan_match_params *match,
 			      gfp_t gfp);
 
+/**
+ * ieee80211_calc_tx_airtime - calculate estimated transmission airtime.
+ *
+ * This function calculates the estimated airtime usage of a frame based on the
+ * rate information in the TX info struct and the frame length.
+ *
+ * @hw: pointer as obtained from ieee80211_alloc_hw()
+ * @info: &struct ieee80211_tx_info of the frame.
+ * @len: frame length in bytes
+ */
+u32 ieee80211_calc_tx_airtime(struct ieee80211_hw *hw,
+			      struct ieee80211_tx_info *info,
+			      int len);
+
 #endif /* MAC80211_H */
