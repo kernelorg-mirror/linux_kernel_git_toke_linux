@@ -2032,12 +2032,10 @@ static struct sk_buff *igc_xdp_run_prog(struct igc_adapter *adapter,
 	int res;
 	u32 act;
 
-	rcu_read_lock();
-
 	prog = READ_ONCE(adapter->xdp_prog);
 	if (!prog) {
 		res = IGC_XDP_PASS;
-		goto unlock;
+		goto xdp_out;
 	}
 
 	act = bpf_prog_run_xdp(prog, xdp);
@@ -2068,8 +2066,7 @@ static struct sk_buff *igc_xdp_run_prog(struct igc_adapter *adapter,
 		break;
 	}
 
-unlock:
-	rcu_read_unlock();
+xdp_out:
 	return ERR_PTR(-res);
 }
 
