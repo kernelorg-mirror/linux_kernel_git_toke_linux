@@ -172,7 +172,10 @@ struct xdp_frame {
 	 * while mem info is valid on remote CPU.
 	 */
 	struct xdp_mem_info mem;
-	struct net_device *dev_rx; /* used by cpumap */
+	union {
+		struct net_device *dev_rx; /* used by cpumap */
+		struct xdp_frame *next; /* used by pifomap */
+	};
 	u32 frame_sz;
 	u32 flags; /* supported values defined in xdp_buff_flags */
 };

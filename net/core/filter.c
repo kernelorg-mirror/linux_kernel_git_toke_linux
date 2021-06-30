@@ -4296,9 +4296,9 @@ static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
 						   struct bpf_prog *xdp_prog)
 {
 	enum bpf_map_type map_type = ri->map_type;
+	struct bpf_map *map = READ_ONCE(ri->map);
 	void *fwd = ri->tgt_value;
 	u32 map_id = ri->map_id;
-	struct bpf_map *map;
 	int err;
 
 	ri->map_id = 0; /* Valid map id idr range: [1,INT_MAX[ */
@@ -4309,18 +4309,21 @@ static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
 		goto err;
 	}
 
+	if (map)
+		WRITE_ONCE(ri->map, NULL);
+
 	switch (map_type) {
 	case BPF_MAP_TYPE_DEVMAP:
-		fallthrough;
 	case BPF_MAP_TYPE_DEVMAP_HASH:
-		map = READ_ONCE(ri->map);
 		if (unlikely(map)) {
-			WRITE_ONCE(ri->map, NULL);
 			err = dev_map_enqueue_multi(xdpf, dev, map,
 						    ri->flags & BPF_F_EXCLUDE_INGRESS);
 		} else {
 			err = dev_map_enqueue(fwd, xdpf, dev);
 		}
+		break;
+	case BPF_MAP_TYPE_PIFO_XDP:
+		err = map ? pifo_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
 		break;
 	case BPF_MAP_TYPE_CPUMAP:
 		err = cpu_map_enqueue(fwd, xdpf, dev);

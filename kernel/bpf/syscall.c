@@ -1120,6 +1120,8 @@ static int map_create(union bpf_attr *attr)
 	}
 
 	if (attr->map_type != BPF_MAP_TYPE_BLOOM_FILTER &&
+	    attr->map_type != BPF_MAP_TYPE_PIFO_XDP &&
+	    attr->map_type != BPF_MAP_TYPE_PIFO_GENERIC &&
 	    attr->map_extra != 0)
 		return -EINVAL;
 
@@ -1175,6 +1177,7 @@ static int map_create(union bpf_attr *attr)
 	case BPF_MAP_TYPE_USER_RINGBUF:
 	case BPF_MAP_TYPE_CGROUP_STORAGE:
 	case BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE:
+	case BPF_MAP_TYPE_PIFO_GENERIC:
 		/* unprivileged */
 		break;
 	case BPF_MAP_TYPE_SK_STORAGE:
@@ -1199,6 +1202,7 @@ static int map_create(union bpf_attr *attr)
 	case BPF_MAP_TYPE_DEVMAP:
 	case BPF_MAP_TYPE_DEVMAP_HASH:
 	case BPF_MAP_TYPE_XSKMAP:
+	case BPF_MAP_TYPE_PIFO_XDP:
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		break;
