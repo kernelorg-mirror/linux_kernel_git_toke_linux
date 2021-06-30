@@ -6269,6 +6269,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_MAP_TYPE_QUEUE:
 	case BPF_MAP_TYPE_STACK:
+	case BPF_MAP_TYPE_PIFO_GENERIC:
 		if (func_id != BPF_FUNC_map_peek_elem &&
 		    func_id != BPF_FUNC_map_pop_elem &&
 		    func_id != BPF_FUNC_map_push_elem)
@@ -6292,6 +6293,10 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 	case BPF_MAP_TYPE_BLOOM_FILTER:
 		if (func_id != BPF_FUNC_map_peek_elem &&
 		    func_id != BPF_FUNC_map_push_elem)
+			goto error;
+		break;
+	case BPF_MAP_TYPE_PIFO_XDP:
+		if (func_id != BPF_FUNC_redirect_map)
 			goto error;
 		break;
 	default:
@@ -6338,6 +6343,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		if (map->map_type != BPF_MAP_TYPE_DEVMAP &&
 		    map->map_type != BPF_MAP_TYPE_DEVMAP_HASH &&
 		    map->map_type != BPF_MAP_TYPE_CPUMAP &&
+		    map->map_type != BPF_MAP_TYPE_PIFO_XDP &&
 		    map->map_type != BPF_MAP_TYPE_XSKMAP)
 			goto error;
 		break;
@@ -6366,13 +6372,15 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_FUNC_map_pop_elem:
 		if (map->map_type != BPF_MAP_TYPE_QUEUE &&
-		    map->map_type != BPF_MAP_TYPE_STACK)
+		    map->map_type != BPF_MAP_TYPE_STACK &&
+		    map->map_type != BPF_MAP_TYPE_PIFO_GENERIC)
 			goto error;
 		break;
 	case BPF_FUNC_map_peek_elem:
 	case BPF_FUNC_map_push_elem:
 		if (map->map_type != BPF_MAP_TYPE_QUEUE &&
 		    map->map_type != BPF_MAP_TYPE_STACK &&
+		    map->map_type != BPF_MAP_TYPE_PIFO_GENERIC &&
 		    map->map_type != BPF_MAP_TYPE_BLOOM_FILTER)
 			goto error;
 		break;
