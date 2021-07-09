@@ -973,6 +973,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LSM,
 	BPF_PROG_TYPE_SK_LOOKUP,
 	BPF_PROG_TYPE_SYSCALL, /* a program that can execute syscalls */
+	BPF_PROG_TYPE_XDP_DEQUEUE,
 };
 
 enum bpf_attach_type {
@@ -6024,6 +6025,10 @@ struct xdp_md {
 	__u32 rx_queue_index;  /* rxq->queue_index  */
 
 	__u32 egress_ifindex;  /* txq->dev->ifindex */
+};
+
+struct dequeue_ctx {
+	__u32 egress_ifindex;
 };
 
 /* DEVMAP map-value layout
