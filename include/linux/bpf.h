@@ -1730,6 +1730,8 @@ int array_map_alloc_check(union bpf_attr *attr);
 
 int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
+int bpf_prog_test_run_dequeue(struct bpf_prog *prog, const union bpf_attr *kattr,
+			      union bpf_attr __user *uattr);
 int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 int bpf_prog_test_run_tracing(struct bpf_prog *prog,
@@ -1969,6 +1971,13 @@ static inline struct bpf_prog *bpf_prog_get_type_path(const char *name,
 static inline int bpf_prog_test_run_xdp(struct bpf_prog *prog,
 					const union bpf_attr *kattr,
 					union bpf_attr __user *uattr)
+{
+	return -ENOTSUPP;
+}
+
+static inline int bpf_prog_test_run_dequeue(struct bpf_prog *prog,
+					    const union bpf_attr *kattr,
+					    union bpf_attr __user *uattr)
 {
 	return -ENOTSUPP;
 }
