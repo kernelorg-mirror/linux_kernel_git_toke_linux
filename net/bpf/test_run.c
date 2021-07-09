@@ -1297,6 +1297,44 @@ free_ctx:
 	return ret;
 }
 
+int bpf_prog_test_run_dequeue(struct bpf_prog *prog, const union bpf_attr *kattr,
+			      union bpf_attr __user *uattr)
+{
+	struct xdp_txq_info txq = { .dev = current->nsproxy->net_ns->loopback_dev };
+	struct dequeue_data ctx = { .txq = &txq };
+	u32 repeat = kattr->test.repeat;
+	u32 retval, duration;
+	int ret = -EINVAL;
+
+	if (prog->expected_attach_type)
+		return -EINVAL;
+
+	if (kattr->test.data_in || kattr->test.data_size_in ||
+	    kattr->test.ctx_in || kattr->test.ctx_out || repeat > 1)
+		return -EINVAL;
+
+	ret = bpf_test_run(prog, &ctx, repeat, &retval, &duration, true);
+	if (ret)
+		goto out;
+
+	if (ctx.dequeued_pkt) {
+		struct xdp_buff xdp = {};
+		u32 size;
+
+		xdp_convert_frame_to_buff(ctx.dequeued_pkt, &xdp);
+		size = xdp.data_end - xdp.data_meta;
+
+		ret = bpf_test_finish(kattr, uattr, xdp.data_meta, NULL, size,
+				      retval, duration);
+		xdp_return_frame(ctx.dequeued_pkt);
+	} else {
+		ret = bpf_test_finish(kattr, uattr, NULL, NULL, 0, retval, duration);
+	}
+out:
+	return ret;
+}
+
+
 static int verify_user_bpf_flow_keys(struct bpf_flow_keys *ctx)
 {
 	/* make sure the fields we don't use are zeroed */
