@@ -57,6 +57,7 @@ tprogs-y += hbm
 tprogs-y += xdp_redirect_cpu
 tprogs-y += xdp_redirect_map_multi
 tprogs-y += xdp_redirect_map
+tprogs-y += xdp_redirect_pifo
 tprogs-y += xdp_redirect
 tprogs-y += xdp_monitor
 
@@ -181,6 +182,7 @@ always-y += ibumad_kern.o
 always-y += hbm_out_kern.o
 always-y += hbm_edt_kern.o
 always-y += xdpsock_kern.o
+always-y += xdp_redirect_pifo_kern.o
 
 ifeq ($(ARCH), arm)
 # Strip all except -D__LINUX_ARM_ARCH__ option needed to handle linux
