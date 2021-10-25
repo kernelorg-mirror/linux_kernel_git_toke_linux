@@ -1819,28 +1819,30 @@ static unsigned int __bpf_prog_ret0_warn(const void *ctx,
 }
 #endif
 
-bool bpf_prog_array_compatible(struct bpf_array *array,
-			       const struct bpf_prog *fp)
+bool bpf_prog_map_compatible(struct bpf_map *map,
+			     const struct bpf_prog *fp)
 {
 	bool ret;
 
 	if (fp->kprobe_override)
 		return false;
 
-	spin_lock(&array->aux->type_check_lock);
+	spin_lock(&map->type_check_lock);
 
-	if (!array->aux->type) {
+	if (!map->prog_type) {
 		/* There's no owner yet where we could check for
 		 * compatibility.
 		 */
-		array->aux->type  = fp->type;
-		array->aux->jited = fp->jited;
+		map->prog_type  = fp->type;
+		map->prog_jited = fp->jited;
+		map->prog_xdp_mb = fp->aux->xdp_mb;
 		ret = true;
 	} else {
-		ret = array->aux->type  == fp->type &&
-		      array->aux->jited == fp->jited;
+		ret = map->prog_type  == fp->type &&
+		      map->prog_jited == fp->jited &&
+		      map->prog_xdp_mb == fp->aux->xdp_mb;
 	}
-	spin_unlock(&array->aux->type_check_lock);
+	spin_unlock(&map->type_check_lock);
 	return ret;
 }
 
@@ -1852,13 +1854,11 @@ static int bpf_check_tail_call(const struct bpf_prog *fp)
 	mutex_lock(&aux->used_maps_mutex);
 	for (i = 0; i < aux->used_map_cnt; i++) {
 		struct bpf_map *map = aux->used_maps[i];
-		struct bpf_array *array;
 
-		if (map->map_type != BPF_MAP_TYPE_PROG_ARRAY)
+		if (!map_type_contains_progs(map))
 			continue;
 
-		array = container_of(map, struct bpf_array, map);
-		if (!bpf_prog_array_compatible(array, fp)) {
+		if (!bpf_prog_map_compatible(map, fp)) {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -2237,7 +2237,8 @@ struct bpf_prog *bpf_map_get_xdp_prog(struct bpf_map *map, int fd,
 	if (IS_ERR(prog))
 		return prog;
 
-	if (prog->expected_attach_type != attach_type) {
+	if (prog->expected_attach_type != attach_type ||
+	    !bpf_prog_map_compatible(map, prog)) {
 		bpf_prog_put(prog);
 		return ERR_PTR(-EINVAL);
 	}

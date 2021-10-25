@@ -537,16 +537,15 @@ static unsigned long bpf_map_memory_footprint(const struct bpf_map *map)
 
 static void bpf_map_show_fdinfo(struct seq_file *m, struct file *filp)
 {
-	const struct bpf_map *map = filp->private_data;
-	const struct bpf_array *array;
-	u32 type = 0, jited = 0;
+	struct bpf_map *map = filp->private_data;
+	u32 type = 0, jited = 0, xdp_mb = 0;
 
-	if (map->map_type == BPF_MAP_TYPE_PROG_ARRAY) {
-		array = container_of(map, struct bpf_array, map);
-		spin_lock(&array->aux->type_check_lock);
-		type  = array->aux->type;
-		jited = array->aux->jited;
-		spin_unlock(&array->aux->type_check_lock);
+	if (map_type_contains_progs(map)) {
+		spin_lock(&map->type_check_lock);
+		type  = map->prog_type;
+		jited = map->prog_jited;
+		xdp_mb = map->prog_xdp_mb;
+		spin_unlock(&map->type_check_lock);
 	}
 
 	seq_printf(m,
@@ -569,6 +568,7 @@ static void bpf_map_show_fdinfo(struct seq_file *m, struct file *filp)
 	if (type) {
 		seq_printf(m, "owner_prog_type:\t%u\n", type);
 		seq_printf(m, "owner_jited:\t%u\n", jited);
+		seq_printf(m, "owner_xdp_mb:\t%u\n", xdp_mb);
 	}
 }
 #endif
@@ -855,6 +855,7 @@ static int map_create(union bpf_attr *attr)
 	atomic64_set(&map->refcnt, 1);
 	atomic64_set(&map->usercnt, 1);
 	mutex_init(&map->freeze_mutex);
+	spin_lock_init(&map->type_check_lock);
 
 	map->spin_lock_off = -EINVAL;
 	map->timer_off = -EINVAL;
