@@ -481,7 +481,8 @@ static bool is_acquire_function(enum bpf_func_id func_id,
 	    func_id == BPF_FUNC_sk_lookup_udp ||
 	    func_id == BPF_FUNC_skc_lookup_tcp ||
 	    func_id == BPF_FUNC_ringbuf_reserve ||
-	    func_id == BPF_FUNC_kptr_xchg)
+	    func_id == BPF_FUNC_kptr_xchg ||
+	    func_id == BPF_FUNC_packet_dequeue)
 		return true;
 
 	if (func_id == BPF_FUNC_map_lookup_elem &&
@@ -6296,7 +6297,8 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 			goto error;
 		break;
 	case BPF_MAP_TYPE_PIFO_XDP:
-		if (func_id != BPF_FUNC_redirect_map)
+		if (func_id != BPF_FUNC_redirect_map &&
+		    func_id != BPF_FUNC_packet_dequeue)
 			goto error;
 		break;
 	default:
@@ -6403,6 +6405,10 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 	case BPF_FUNC_task_storage_get:
 	case BPF_FUNC_task_storage_delete:
 		if (map->map_type != BPF_MAP_TYPE_TASK_STORAGE)
+			goto error;
+		break;
+	case BPF_FUNC_packet_dequeue:
+		if (map->map_type != BPF_MAP_TYPE_PIFO_XDP)
 			goto error;
 		break;
 	default:
