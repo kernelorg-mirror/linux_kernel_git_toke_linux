@@ -439,7 +439,8 @@ static bool reg_type_not_null(enum bpf_reg_type type)
 		type == PTR_TO_TCP_SOCK ||
 		type == PTR_TO_MAP_VALUE ||
 		type == PTR_TO_MAP_KEY ||
-		type == PTR_TO_SOCK_COMMON;
+		type == PTR_TO_SOCK_COMMON ||
+		type == PTR_TO_QUEUED_PKT;
 }
 
 static bool reg_may_point_to_spin_lock(const struct bpf_reg_state *reg)
@@ -453,7 +454,8 @@ static bool reg_type_may_be_refcounted_or_null(enum bpf_reg_type type)
 	return base_type(type) == PTR_TO_SOCKET ||
 		base_type(type) == PTR_TO_TCP_SOCK ||
 		base_type(type) == PTR_TO_MEM ||
-		base_type(type) == PTR_TO_BTF_ID;
+		base_type(type) == PTR_TO_BTF_ID ||
+		base_type(type) == PTR_TO_QUEUED_PKT;
 }
 
 static bool type_is_rdonly_mem(u32 type)
@@ -559,6 +561,7 @@ static const char *reg_type_str(struct bpf_verifier_env *env,
 		[PTR_TO_BUF]		= "buf",
 		[PTR_TO_FUNC]		= "func",
 		[PTR_TO_MAP_KEY]	= "map_key",
+		[PTR_TO_QUEUED_PKT]	= "queued_pkt",
 	};
 
 	if (type & PTR_MAYBE_NULL) {
@@ -2772,6 +2775,7 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case PTR_TO_MEM:
 	case PTR_TO_FUNC:
 	case PTR_TO_MAP_KEY:
+	case PTR_TO_QUEUED_PKT:
 		return true;
 	default:
 		return false;
@@ -3815,6 +3819,9 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
 		break;
 	case PTR_TO_XDP_SOCK:
 		pointer_desc = "xdp_sock ";
+		break;
+	case PTR_TO_QUEUED_PKT:
+		pointer_desc = "queued_pkt ";
 		break;
 	default:
 		break;
@@ -5248,6 +5255,7 @@ static const struct bpf_reg_types func_ptr_types = { .types = { PTR_TO_FUNC } };
 static const struct bpf_reg_types stack_ptr_types = { .types = { PTR_TO_STACK } };
 static const struct bpf_reg_types const_str_ptr_types = { .types = { PTR_TO_MAP_VALUE } };
 static const struct bpf_reg_types timer_types = { .types = { PTR_TO_MAP_VALUE } };
+static const struct bpf_reg_types queued_pkt_types = { .types = { PTR_TO_QUEUED_PKT } };
 
 static const struct bpf_reg_types *compatible_reg_types[__BPF_ARG_TYPE_MAX] = {
 	[ARG_PTR_TO_MAP_KEY]		= &map_key_value_types,
@@ -5275,6 +5283,7 @@ static const struct bpf_reg_types *compatible_reg_types[__BPF_ARG_TYPE_MAX] = {
 	[ARG_PTR_TO_STACK]		= &stack_ptr_types,
 	[ARG_PTR_TO_CONST_STR]		= &const_str_ptr_types,
 	[ARG_PTR_TO_TIMER]		= &timer_types,
+	[ARG_PTR_TO_QUEUED_PKT]		= &queued_pkt_types,
 };
 
 static int check_reg_type(struct bpf_verifier_env *env, u32 regno,
@@ -6747,6 +6756,9 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 	} else if (base_type(ret_type) == RET_PTR_TO_TCP_SOCK) {
 		mark_reg_known_zero(env, regs, BPF_REG_0);
 		regs[BPF_REG_0].type = PTR_TO_TCP_SOCK | ret_flag;
+	} else if (base_type(ret_type) == RET_PTR_TO_QUEUED_PKT) {
+		mark_reg_known_zero(env, regs, BPF_REG_0);
+		regs[BPF_REG_0].type = PTR_TO_QUEUED_PKT | ret_flag;
 	} else if (base_type(ret_type) == RET_PTR_TO_ALLOC_MEM) {
 		mark_reg_known_zero(env, regs, BPF_REG_0);
 		regs[BPF_REG_0].type = PTR_TO_MEM | ret_flag;
@@ -7462,6 +7474,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 	case PTR_TO_SOCK_COMMON:
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_XDP_SOCK:
+	case PTR_TO_QUEUED_PKT:
 		verbose(env, "R%d pointer arithmetic on %s prohibited\n",
 			dst, reg_type_str(env, ptr_reg->type));
 		return -EACCES;
@@ -10836,6 +10849,7 @@ static bool regsafe(struct bpf_verifier_env *env, struct bpf_reg_state *rold,
 	case PTR_TO_SOCK_COMMON:
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_XDP_SOCK:
+	case PTR_TO_QUEUED_PKT:
 		/* Only valid matches are exact, which memcmp() above
 		 * would have accepted
 		 */
@@ -11367,6 +11381,7 @@ static bool reg_type_mismatch_ok(enum bpf_reg_type type)
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_XDP_SOCK:
 	case PTR_TO_BTF_ID:
+	case PTR_TO_QUEUED_PKT:
 		return false;
 	default:
 		return true;
