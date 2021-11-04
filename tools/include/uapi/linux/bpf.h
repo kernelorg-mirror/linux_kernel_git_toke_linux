@@ -5090,6 +5090,31 @@ union bpf_attr {
  *	Return
  *		0 on success, or a negative error in case of failure. On error
  *		*dst* buffer is zeroed out.
+ *
+ * long bpf_packet_dequeue(void *ctx, struct bpf_map *map, u64 flags)
+ *	Description
+ *		Dequeue the packet at the head of the PIFO in *map* and return a pointer
+ *		to the packet (or NULL if the PIFO is empty).
+ *	Return
+ *		On success, a pointer to the packet, or NULL if the PIFO is empty. The
+ *		packet pointer must be freed using *bpf_packet_drop()* or *bpf_packet_return()*
+ *
+ * long bpf_packet_drop(void *ctx, void *pkt)
+ *	Description
+ *		Drop *pkt*, which must be a reference previously returned by
+ *		*bpf_packet_dequeue()* (and checked to not be NULL).
+ *	Return
+ *		This always succeeds and returns zero.
+ *
+ * long bpf_packet_return(void *ctx, void *pkt)
+ *	Description
+ *		Return *pkt* to the kernel for further processing. The *pkt* pointer must
+ *		be a reference previously returned by *bpf_packet_dequeue()* (and checked
+ *		to not be NULL). If this is called multiple times with different packets,
+ *		subsequent calls will cause earlier packets to be dropped (only one packet
+ *		can be returned).
+ *	Return
+ *		This always succeeds and returns zero.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -5284,6 +5309,9 @@ union bpf_attr {
 	FN(xdp_load_bytes),		\
 	FN(xdp_store_bytes),		\
 	FN(copy_from_user_task),	\
+	FN(packet_dequeue),		\
+	FN(packet_drop),		\
+	FN(packet_return),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
