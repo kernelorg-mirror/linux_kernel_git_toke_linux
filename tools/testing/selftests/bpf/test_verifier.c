@@ -103,6 +103,7 @@ struct bpf_test {
 	int fixup_map_timer[MAX_FIXUPS];
 	int fixup_map_kptr[MAX_FIXUPS];
 	struct kfunc_btf_id_pair fixup_kfunc_btf_id[MAX_FIXUPS];
+	int fixup_map_pifo[MAX_FIXUPS];
 	/* Expected verifier log output for result REJECT or VERBOSE_ACCEPT.
 	 * Can be a tab-separated sequence of expected strings. An empty string
 	 * means no log verification.
@@ -799,6 +800,7 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 	int *fixup_map_timer = test->fixup_map_timer;
 	int *fixup_map_kptr = test->fixup_map_kptr;
 	struct kfunc_btf_id_pair *fixup_kfunc_btf_id = test->fixup_kfunc_btf_id;
+	int *fixup_map_pifo = test->fixup_map_pifo;
 
 	if (test->fill_helper) {
 		test->fill_insns = calloc(MAX_TEST_INSNS, sizeof(struct bpf_insn));
@@ -1017,6 +1019,13 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 			prog[fixup_kfunc_btf_id->insn_idx].imm = btf_id;
 			fixup_kfunc_btf_id++;
 		} while (fixup_kfunc_btf_id->kfunc);
+	}
+	if (*fixup_map_pifo) {
+		map_fds[22] = create_map(BPF_MAP_TYPE_PIFO_XDP, sizeof(u32), sizeof(u32), 8);
+		do {
+			prog[*fixup_map_pifo].imm = map_fds[22];
+			fixup_map_pifo++;
+		} while (*fixup_map_pifo);
 	}
 }
 
