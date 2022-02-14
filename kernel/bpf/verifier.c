@@ -427,6 +427,12 @@ static bool type_is_pkt_pointer(enum bpf_reg_type type)
 	       type == PTR_TO_PACKET_META;
 }
 
+static bool type_is_pkt_pointer_any(enum bpf_reg_type type)
+{
+	return type_is_pkt_pointer(type) ||
+	       type == PTR_TO_PACKET_END;
+}
+
 static bool type_is_sk_pointer(enum bpf_reg_type type)
 {
 	return type == PTR_TO_SOCKET ||
@@ -704,12 +710,19 @@ static void print_verifier_state(struct bpf_verifier_env *env,
 
 			if (reg->id)
 				verbose_a("id=%d", reg->id);
+			if (reg->type == PTR_TO_PACKET || reg->type == PTR_TO_PACKET_META ||
+			    reg->type == PTR_TO_PACKET_END) {
+				if (reg->pkt_uid)
+					verbose_a("pkt_uid=%d", reg->pkt_uid);
+			}
 			if (reg_type_may_be_refcounted_or_null(t) && reg->ref_obj_id)
 				verbose_a("ref_obj_id=%d", reg->ref_obj_id);
 			if (t != SCALAR_VALUE)
 				verbose_a("off=%d", reg->off);
 			if (type_is_pkt_pointer(t))
 				verbose_a("r=%d", reg->range);
+			if (type_is_pkt_pointer_any(t) && reg->pkt_uid)
+				verbose_a("pkt_uid=%d", reg->pkt_uid);
 			else if (base_type(t) == CONST_PTR_TO_MAP ||
 				 base_type(t) == PTR_TO_MAP_KEY ||
 				 base_type(t) == PTR_TO_MAP_VALUE)
@@ -1243,8 +1256,7 @@ static bool reg_is_pkt_pointer(const struct bpf_reg_state *reg)
 
 static bool reg_is_pkt_pointer_any(const struct bpf_reg_state *reg)
 {
-	return reg_is_pkt_pointer(reg) ||
-	       reg->type == PTR_TO_PACKET_END;
+	return type_is_pkt_pointer_any(reg->type);
 }
 
 /* Unmodified PTR_TO_PACKET[_META,_END] register from ctx access. */
@@ -1550,7 +1562,7 @@ static void mark_reg_not_init(struct bpf_verifier_env *env,
 static void mark_btf_ld_reg(struct bpf_verifier_env *env,
 			    struct bpf_reg_state *regs, u32 regno,
 			    enum bpf_reg_type reg_type,
-			    struct btf *btf, u32 btf_id,
+			    struct btf *btf, u32 reg_id,
 			    enum bpf_type_flag flag)
 {
 	if (reg_type == SCALAR_VALUE) {
@@ -1558,9 +1570,14 @@ static void mark_btf_ld_reg(struct bpf_verifier_env *env,
 		return;
 	}
 	mark_reg_known_zero(env, regs, regno);
-	regs[regno].type = PTR_TO_BTF_ID | flag;
+	regs[regno].type = (int)reg_type | flag;
+	/* If not PTR_TO_BTF_ID, it is a pkt pointer */
+	if (reg_type != PTR_TO_BTF_ID) {
+		regs[regno].pkt_uid = reg_id;
+		return;
+	}
 	regs[regno].btf = btf;
-	regs[regno].btf_id = btf_id;
+	regs[regno].btf_id = reg_id;
 }
 
 #define DEF_NOT_SUBREG	(0)
@@ -4322,13 +4339,14 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 				   struct bpf_reg_state *regs,
 				   int regno, int off, int size,
 				   enum bpf_access_type atype,
-				   int value_regno)
+				   int value_regno, int insn_idx)
 {
 	struct bpf_reg_state *reg = regs + regno;
 	const struct btf_type *t = btf_type_by_id(reg->btf, reg->btf_id);
 	const char *tname = btf_name_by_offset(reg->btf, t->name_off);
+	struct bpf_insn_aux_data *aux = &env->insn_aux_data[insn_idx];
 	enum bpf_type_flag flag = 0;
-	u32 btf_id;
+	u32 reg_id;
 	int ret;
 
 	if (off < 0) {
@@ -4363,7 +4381,7 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 
 	if (env->ops->btf_struct_access) {
 		ret = env->ops->btf_struct_access(&env->log, reg->btf, t,
-						  off, size, atype, &btf_id, &flag);
+						  off, size, atype, &reg_id, &flag);
 	} else {
 		if (atype != BPF_READ) {
 			verbose(env, "only read is supported\n");
@@ -4371,7 +4389,7 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 		}
 
 		ret = btf_struct_access(&env->log, reg->btf, t, off, size,
-					atype, &btf_id, &flag);
+					atype, &reg_id, &flag);
 	}
 
 	if (ret < 0)
@@ -4383,8 +4401,21 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 	if (type_flag(reg->type) & PTR_UNTRUSTED)
 		flag |= PTR_UNTRUSTED;
 
-	if (atype == BPF_READ && value_regno >= 0)
-		mark_btf_ld_reg(env, regs, value_regno, ret, reg->btf, btf_id, flag);
+	/* Remember the BTF ID for later use in convert_ctx_accesses */
+	aux->btf_var.reg_type = PTR_TO_BTF_ID;
+	aux->btf_var.btf_id = reg->btf_id;
+	aux->btf_var.btf = reg->btf;
+
+	if (atype == BPF_READ && value_regno >= 0) {
+		/* For pkt pointers, reg_id is set to pkt_uid, which must be the
+		 * ref_obj_id of the referenced register from which they are
+		 * obtained, denoting different packets e.g. in dequeue progs.
+		 */
+		if (ret == PTR_TO_PACKET || ret == PTR_TO_PACKET_META ||
+		    ret == PTR_TO_PACKET_END)
+			reg_id = reg->ref_obj_id;
+		mark_btf_ld_reg(env, regs, value_regno, ret, reg->btf, reg_id, flag);
+	}
 
 	return 0;
 }
@@ -4739,7 +4770,7 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	} else if (base_type(reg->type) == PTR_TO_BTF_ID &&
 		   !type_may_be_null(reg->type)) {
 		err = check_ptr_to_btf_access(env, regs, regno, off, size, t,
-					      value_regno);
+					      value_regno, insn_idx);
 	} else if (reg->type == CONST_PTR_TO_MAP) {
 		err = check_ptr_to_map_access(env, regs, regno, off, size, t,
 					      value_regno);
@@ -6335,14 +6366,21 @@ static void release_reg_references(struct bpf_verifier_env *env,
 	struct bpf_reg_state *regs = state->regs, *reg;
 	int i;
 
-	for (i = 0; i < MAX_BPF_REG; i++)
+	for (i = 0; i < MAX_BPF_REG; i++) {
 		if (regs[i].ref_obj_id == ref_obj_id)
 			mark_reg_unknown(env, regs, i);
+		/* Invalidate all pkt pointers inherting ref_obj_id in pkt_uid */
+		else if (reg_is_pkt_pointer_any(&regs[i]) && regs[i].pkt_uid == ref_obj_id)
+			mark_reg_unknown(env, regs, i);
+	}
 
 	bpf_for_each_spilled_reg(i, state, reg) {
 		if (!reg)
 			continue;
 		if (reg->ref_obj_id == ref_obj_id)
+			__mark_reg_unknown(env, reg);
+		/* Invalidate all pkt pointers inherting ref_obj_id in pkt_uid */
+		else if (reg_is_pkt_pointer_any(reg) && reg->pkt_uid == ref_obj_id)
 			__mark_reg_unknown(env, reg);
 	}
 }
@@ -7880,7 +7918,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 		if (reg_is_pkt_pointer(ptr_reg)) {
 			dst_reg->id = ++env->id_gen;
 			/* something was added to pkt_ptr, set range to zero */
-			memset(&dst_reg->raw, 0, sizeof(dst_reg->raw));
+			dst_reg->range = 0;
 		}
 		break;
 	case BPF_SUB:
@@ -7940,7 +7978,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 			dst_reg->id = ++env->id_gen;
 			/* something was added to pkt_ptr, set range to zero */
 			if (smin_val < 0)
-				memset(&dst_reg->raw, 0, sizeof(dst_reg->raw));
+				dst_reg->range = 0;
 		}
 		break;
 	case BPF_AND:
@@ -8977,7 +9015,8 @@ static void __find_good_pkt_pointers(struct bpf_func_state *state,
 
 	for (i = 0; i < MAX_BPF_REG; i++) {
 		reg = &state->regs[i];
-		if (reg->type == type && reg->id == dst_reg->id)
+		if (reg->type == type && reg->id == dst_reg->id &&
+		    reg->pkt_uid == dst_reg->pkt_uid)
 			/* keep the maximum range already checked */
 			reg->range = max(reg->range, new_range);
 	}
@@ -8985,7 +9024,8 @@ static void __find_good_pkt_pointers(struct bpf_func_state *state,
 	bpf_for_each_spilled_reg(i, state, reg) {
 		if (!reg)
 			continue;
-		if (reg->type == type && reg->id == dst_reg->id)
+		if (reg->type == type && reg->id == dst_reg->id &&
+		    reg->pkt_uid == dst_reg->pkt_uid)
 			reg->range = max(reg->range, new_range);
 	}
 }
@@ -9606,6 +9646,14 @@ static void mark_ptr_or_null_regs(struct bpf_verifier_state *vstate, u32 regno,
 		__mark_ptr_or_null_regs(vstate->frame[i], id, is_null);
 }
 
+static bool is_bad_pkt_comparison(const struct bpf_reg_state *dst_reg,
+				  const struct bpf_reg_state *src_reg)
+{
+	if (!reg_is_pkt_pointer_any(dst_reg) || !reg_is_pkt_pointer_any(src_reg))
+		return false;
+	return dst_reg->pkt_uid != src_reg->pkt_uid;
+}
+
 static bool try_match_pkt_pointers(const struct bpf_insn *insn,
 				   struct bpf_reg_state *dst_reg,
 				   struct bpf_reg_state *src_reg,
@@ -9617,6 +9665,9 @@ static bool try_match_pkt_pointers(const struct bpf_insn *insn,
 
 	/* Pointers are always 64-bit. */
 	if (BPF_CLASS(insn->code) == BPF_JMP32)
+		return false;
+
+	if (is_bad_pkt_comparison(dst_reg, src_reg))
 		return false;
 
 	switch (BPF_OP(insn->code)) {
@@ -9916,11 +9967,17 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		mark_ptr_or_null_regs(other_branch, insn->dst_reg,
 				      opcode == BPF_JEQ);
 	} else if (!try_match_pkt_pointers(insn, dst_reg, &regs[insn->src_reg],
-					   this_branch, other_branch) &&
-		   is_pointer_value(env, insn->dst_reg)) {
-		verbose(env, "R%d pointer comparison prohibited\n",
-			insn->dst_reg);
-		return -EACCES;
+					   this_branch, other_branch)) {
+		if (is_pointer_value(env, insn->dst_reg)) {
+			verbose(env, "R%d pointer comparison prohibited\n",
+				insn->dst_reg);
+			return -EACCES;
+		}
+		if (is_bad_pkt_comparison(dst_reg, &regs[insn->src_reg])) {
+			verbose(env, "R%d, R%d pkt pointer comparison prohibited\n",
+				insn->dst_reg, insn->src_reg);
+			return -EACCES;
+		}
 	}
 	if (env->log.level & BPF_LOG_LEVEL)
 		print_insn_state(env, this_branch->frame[this_branch->curframe]);
@@ -11179,6 +11236,8 @@ static bool regsafe(struct bpf_verifier_env *env, struct bpf_reg_state *rold,
 			return false;
 		/* id relations must be preserved */
 		if (rold->id && !check_ids(rold->id, rcur->id, idmap))
+			return false;
+		if (rold->pkt_uid && !check_ids(rold->pkt_uid, rcur->pkt_uid, idmap))
 			return false;
 		/* new val must satisfy old val knowledge */
 		return range_within(rold, rcur) &&
@@ -13150,8 +13209,15 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		case PTR_TO_BTF_ID:
 		case PTR_TO_BTF_ID | PTR_UNTRUSTED:
 			if (type == BPF_READ) {
-				insn->code = BPF_LDX | BPF_PROBE_MEM |
-					BPF_SIZE((insn)->code);
+				if (env->ops->get_convert_ctx_access) {
+					struct btf *btf = env->insn_aux_data[i + delta].btf_var.btf;
+					u32 btf_id = env->insn_aux_data[i + delta].btf_var.btf_id;
+
+					convert_ctx_access = env->ops->get_convert_ctx_access(&env->log, btf, btf_id);
+					if (convert_ctx_access)
+						break;
+				}
+				insn->code = BPF_LDX | BPF_PROBE_MEM | BPF_SIZE((insn)->code);
 				env->prog->aux->num_exentries++;
 			} else if (resolve_prog_type(env->prog) != BPF_PROG_TYPE_STRUCT_OPS) {
 				verbose(env, "Writes through BTF pointers are not allowed\n");
