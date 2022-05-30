@@ -106,6 +106,7 @@
 #include <net/pkt_sched.h>
 #include <net/pkt_cls.h>
 #include <net/checksum.h>
+#include <net/xdp.h>
 #include <net/xfrm.h>
 #include <linux/highmem.h>
 #include <linux/init.h>
@@ -3120,6 +3121,22 @@ void netif_tx_wake_queue(struct netdev_queue *dev_queue)
 }
 EXPORT_SYMBOL(netif_tx_wake_queue);
 
+void netif_tx_schedule_xdp(struct xdp_dequeue *deq)
+{
+	bool need_bh_off = !(hardirq_count() | softirq_count());
+
+	WARN_ON_ONCE(need_bh_off);
+
+	if (!deq->next) {
+		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+		deq->next = sd->xdp_dequeue;
+		sd->xdp_dequeue = deq;
+		raise_softirq_irqoff(NET_TX_SOFTIRQ);
+	}
+}
+EXPORT_SYMBOL(netif_tx_schedule_xdp);
+
 void __dev_kfree_skb_irq(struct sk_buff *skb, enum skb_free_reason reason)
 {
 	unsigned long flags;
@@ -5015,6 +5032,17 @@ EXPORT_SYMBOL(netif_rx);
 static __latent_entropy void net_tx_action(struct softirq_action *h)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+	if (sd->xdp_dequeue) {
+		struct xdp_dequeue *deq;
+
+		local_irq_disable();
+		deq = sd->xdp_dequeue;
+		sd->xdp_dequeue = NULL;
+		local_irq_enable();
+
+		dev_run_xdp_dequeue(deq);
+	}
 
 	if (sd->completion_queue) {
 		struct sk_buff *clist;
@@ -9518,6 +9546,95 @@ int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
 	}
 
 	err = dev_xdp_attach(dev, extack, NULL, new_prog, old_prog, flags);
+
+err_out:
+	if (err && new_prog)
+		bpf_prog_put(new_prog);
+	if (old_prog)
+		bpf_prog_put(old_prog);
+	return err;
+}
+
+u32 dev_xdp_dequeue_prog_id(struct net_device *dev)
+{
+	struct bpf_prog *prog = rtnl_dereference(dev->xdp_dequeue_prog);
+
+	return prog ? prog->aux->id : 0;
+}
+
+static int dev_xdp_dequeue_attach(struct net_device *dev, struct netlink_ext_ack *extack,
+				  struct bpf_prog *new_prog, struct bpf_prog *old_prog, u32 flags)
+{
+	struct bpf_prog *cur_prog;
+
+	ASSERT_RTNL();
+
+	cur_prog = rcu_dereference(dev->xdp_dequeue_prog);
+
+	/* old_prog != NULL implies XDP_FLAGS_REPLACE is set */
+	if (old_prog && !(flags & XDP_FLAGS_REPLACE)) {
+		NL_SET_ERR_MSG(extack, "XDP_FLAGS_REPLACE is not specified");
+		return -EINVAL;
+	}
+
+	if ((flags & XDP_FLAGS_REPLACE) && cur_prog != old_prog) {
+		NL_SET_ERR_MSG(extack, "Active program does not match expected");
+		return -EEXIST;
+	}
+
+	if (new_prog && cur_prog && (flags & XDP_FLAGS_UPDATE_IF_NOEXIST)) {
+		NL_SET_ERR_MSG(extack, "Dequeue program already attached");
+		return -EBUSY;
+	}
+
+	if (cur_prog != new_prog) {
+		rcu_assign_pointer(dev->xdp_dequeue_prog, new_prog);
+		bpf_prog_change_xdp_dequeue(cur_prog, new_prog);
+	}
+
+	if (cur_prog)
+		bpf_prog_put(cur_prog);
+
+	return 0;
+}
+
+/**
+ *	dev_change_xdp_dequeue_fd - set or clear a bpf program for a XDP dequeue
+ *	@dev: device
+ *	@extack: netlink extended ack
+ *	@fd: new program fd or negative value to clear
+ *	@expected_fd: old program fd that userspace expects to replace or clear
+ *	@flags: xdp dequeue-related flags
+ *
+ *	Set or clear an XDP dequeue program for a device
+ */
+int dev_change_xdp_dequeue_fd(struct net_device *dev, struct netlink_ext_ack *extack,
+			      int fd, int expected_fd, u32 flags)
+{
+	struct bpf_prog *new_prog = NULL, *old_prog = NULL;
+	int err;
+
+	ASSERT_RTNL();
+
+	if (fd >= 0) {
+		new_prog = bpf_prog_get_type_dev(fd, BPF_PROG_TYPE_XDP_DEQUEUE, false);
+		if (IS_ERR(new_prog))
+			return PTR_ERR(new_prog);
+	}
+
+	if (expected_fd >= 0) {
+		old_prog = bpf_prog_get_type_dev(expected_fd,
+						 BPF_PROG_TYPE_XDP_DEQUEUE,
+						 false);
+		if (IS_ERR(old_prog)) {
+			err = PTR_ERR(old_prog);
+			old_prog = NULL;
+			NL_SET_ERR_MSG(extack, "Invalid expected_fd");
+			goto err_out;
+		}
+	}
+
+	err = dev_xdp_dequeue_attach(dev, extack, new_prog, old_prog, flags);
 
 err_out:
 	if (err && new_prog)
