@@ -4239,6 +4239,9 @@ static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
 	case BPF_MAP_TYPE_PIFO_XDP:
 		err = map ? pifo_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
 		break;
+	case BPF_MAP_TYPE_PIFO_XDP_RB:
+		err = map ? pifo_rb_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
+		break;
 	case BPF_MAP_TYPE_CPUMAP:
 		err = cpu_map_enqueue(fwd, xdpf, dev);
 		break;
@@ -4431,7 +4434,14 @@ BTF_ID_LIST_SINGLE(xdp_md_btf_ids, struct, xdp_md)
 BPF_CALL_4(bpf_packet_dequeue, struct dequeue_data *, ctx, struct bpf_map *, map,
 	   u64, flags, u64 *, rank)
 {
-	return (unsigned long)pifo_map_dequeue(map, flags, rank);
+	switch (map->map_type) {
+	case BPF_MAP_TYPE_PIFO_XDP:
+		return (unsigned long)pifo_map_dequeue(map, flags, rank);
+	case BPF_MAP_TYPE_PIFO_XDP_RB:
+		return (unsigned long)pifo_rb_map_dequeue(map, flags, rank);
+	default:
+		return 0;
+	}
 }
 
 static const struct bpf_func_proto bpf_packet_dequeue_proto = {
