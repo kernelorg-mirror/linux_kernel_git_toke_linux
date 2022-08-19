@@ -4325,6 +4325,9 @@ static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
 	case BPF_MAP_TYPE_PIFO_XDP:
 		err = map ? pifo_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
 		break;
+	case BPF_MAP_TYPE_PIFO_XDP_RB:
+		err = map ? pifo_rb_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
+		break;
 	case BPF_MAP_TYPE_CPUMAP:
 		err = cpu_map_enqueue(fwd, xdpf, dev);
 		break;

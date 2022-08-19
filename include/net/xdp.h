@@ -175,7 +175,9 @@ struct xdp_frame {
 	union {
 		struct net_device *dev_rx; /* used by cpumap */
 		struct xdp_frame *next; /* used by pifomap */
+		struct rb_node rbnode; /* used by pifomap_rbtree */
 	};
+	u64 rank;
 	u32 frame_sz;
 	u32 flags; /* supported values defined in xdp_buff_flags */
 };
