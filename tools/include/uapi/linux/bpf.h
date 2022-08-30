@@ -931,6 +931,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_PIFO_GENERIC,
 	BPF_MAP_TYPE_PIFO_XDP,
 	BPF_MAP_TYPE_PIFO_XDP_RB,
+	BPF_MAP_TYPE_XDP_FIFO,
 };
 
 /* Note that tracing related programs such as

@@ -4242,6 +4242,9 @@ static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
 	case BPF_MAP_TYPE_PIFO_XDP_RB:
 		err = map ? pifo_rb_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
 		break;
+	case BPF_MAP_TYPE_XDP_FIFO:
+		err = map ? xdp_fifo_map_enqueue(map, xdpf, ri->tgt_index) : -EINVAL;
+		break;
 	case BPF_MAP_TYPE_CPUMAP:
 		err = cpu_map_enqueue(fwd, xdpf, dev);
 		break;
@@ -4439,6 +4442,8 @@ BPF_CALL_4(bpf_packet_dequeue, struct dequeue_data *, ctx, struct bpf_map *, map
 		return (unsigned long)pifo_map_dequeue(map, flags, rank);
 	case BPF_MAP_TYPE_PIFO_XDP_RB:
 		return (unsigned long)pifo_rb_map_dequeue(map, flags, rank);
+	case BPF_MAP_TYPE_XDP_FIFO:
+		return (unsigned long)xdp_fifo_map_dequeue(map, flags, rank);
 	default:
 		return 0;
 	}

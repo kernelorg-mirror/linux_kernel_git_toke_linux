@@ -115,6 +115,7 @@ BPF_MAP_TYPE(BPF_MAP_TYPE_SK_STORAGE, sk_storage_map_ops)
 BPF_MAP_TYPE(BPF_MAP_TYPE_CPUMAP, cpu_map_ops)
 BPF_MAP_TYPE(BPF_MAP_TYPE_PIFO_XDP, pifo_xdp_map_ops)
 BPF_MAP_TYPE(BPF_MAP_TYPE_PIFO_XDP_RB, pifo_rb_map_ops)
+BPF_MAP_TYPE(BPF_MAP_TYPE_XDP_FIFO, xdp_fifo_map_ops)
 #if defined(CONFIG_XDP_SOCKETS)
 BPF_MAP_TYPE(BPF_MAP_TYPE_XSKMAP, xsk_map_ops)
 #endif

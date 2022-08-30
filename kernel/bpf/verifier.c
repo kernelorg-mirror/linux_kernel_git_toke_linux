@@ -6298,6 +6298,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_MAP_TYPE_PIFO_XDP:
 	case BPF_MAP_TYPE_PIFO_XDP_RB:
+	case BPF_MAP_TYPE_XDP_FIFO:
 		if (func_id != BPF_FUNC_redirect_map &&
 		    func_id != BPF_FUNC_packet_dequeue)
 			goto error;
@@ -6348,6 +6349,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		    map->map_type != BPF_MAP_TYPE_CPUMAP &&
 		    map->map_type != BPF_MAP_TYPE_PIFO_XDP &&
 		    map->map_type != BPF_MAP_TYPE_PIFO_XDP_RB &&
+		    map->map_type != BPF_MAP_TYPE_XDP_FIFO &&
 		    map->map_type != BPF_MAP_TYPE_XSKMAP)
 			goto error;
 		break;
@@ -6411,7 +6413,8 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_FUNC_packet_dequeue:
 		if (map->map_type != BPF_MAP_TYPE_PIFO_XDP &&
-		    map->map_type != BPF_MAP_TYPE_PIFO_XDP_RB)
+		    map->map_type != BPF_MAP_TYPE_PIFO_XDP_RB &&
+		    map->map_type != BPF_MAP_TYPE_XDP_FIFO)
 			goto error;
 		break;
 	default:

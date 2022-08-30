@@ -1875,8 +1875,10 @@ int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
 
 int pifo_map_enqueue(struct bpf_map *map, struct xdp_frame *xdpf, u32 index);
 int pifo_rb_map_enqueue(struct bpf_map *map, struct xdp_frame *xdpf, u64 index);
+int xdp_fifo_map_enqueue(struct bpf_map *map, struct xdp_frame *xdpf, u64 index);
 struct xdp_frame *pifo_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank);
 struct xdp_frame *pifo_rb_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank);
+struct xdp_frame *xdp_fifo_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank);
 
 /* Return map's numa specified by userspace */
 static inline int bpf_map_attr_numa_node(const union bpf_attr *attr)
@@ -2132,12 +2134,22 @@ static inline int pifo_rb_map_enqueue(struct bpf_map *map, struct xdp_frame *xdp
 	return 0;
 }
 
+static inline int xdp_fifo_map_enqueue(struct bpf_map *map, struct xdp_frame *xdp, u32 index)
+{
+	return 0;
+}
+
 static inline struct xdp_frame *pifo_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank)
 {
 	return NULL;
 }
 
 static inline struct xdp_frame *pifo_rb_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank)
+{
+	return NULL;
+}
+
+static inline struct xdp_frame *xdp_fifo_map_dequeue(struct bpf_map *map, u64 flags, u64 *rank)
 {
 	return NULL;
 }
