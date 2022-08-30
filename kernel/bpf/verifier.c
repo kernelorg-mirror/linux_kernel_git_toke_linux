@@ -9084,6 +9084,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		    map->map_type != BPF_MAP_TYPE_CPUMAP &&
 		    map->map_type != BPF_MAP_TYPE_PIFO_XDP &&
 		    map->map_type != BPF_MAP_TYPE_PIFO_XDP_RB &&
+		    map->map_type != BPF_MAP_TYPE_XDP_FIFO &&
 		    map->map_type != BPF_MAP_TYPE_XSKMAP)
 			goto error;
 		break;
@@ -17538,6 +17539,7 @@ process_bpf_exit_full:
 				err = check_return_code(env, BPF_REG_0);
 				if (err)
 					return err;
+
 process_bpf_exit:
 				mark_verifier_state_scratched(env);
 				update_branch_counts(env, env->cur_state);

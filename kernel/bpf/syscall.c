@@ -1123,6 +1123,7 @@ static int map_create(union bpf_attr *attr)
 	    attr->map_type != BPF_MAP_TYPE_PIFO_XDP &&
 	    attr->map_type != BPF_MAP_TYPE_PIFO_XDP_RB &&
 	    attr->map_type != BPF_MAP_TYPE_PIFO_GENERIC &&
+	    attr->map_type != BPF_MAP_TYPE_XDP_FIFO &&
 	    attr->map_extra != 0)
 		return -EINVAL;
 
@@ -1205,6 +1206,7 @@ static int map_create(union bpf_attr *attr)
 	case BPF_MAP_TYPE_XSKMAP:
 	case BPF_MAP_TYPE_PIFO_XDP:
 	case BPF_MAP_TYPE_PIFO_XDP_RB:
+	case BPF_MAP_TYPE_XDP_FIFO:
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		break;
