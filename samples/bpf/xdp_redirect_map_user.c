@@ -34,6 +34,7 @@ static const struct option long_options[] = {
 	{ "skb-mode", no_argument, NULL, 'S' },
 	{ "force", no_argument, NULL, 'F' },
 	{ "load-egress", no_argument, NULL, 'X' },
+	{ "queue", no_argument, NULL, 'Q' },
 	{ "stats", no_argument, NULL, 's' },
 	{ "interval", required_argument, NULL, 'i' },
 	{ "verbose", no_argument, NULL, 'v' },
@@ -58,10 +59,11 @@ int main(int argc, char **argv)
 	bool generic = false;
 	bool force = false;
 	bool tried = false;
+	bool queue = false;
 	bool error = true;
 	int opt, key = 0;
 
-	while ((opt = getopt_long(argc, argv, "hSFXi:vs",
+	while ((opt = getopt_long(argc, argv, "hSFQXi:vs",
 				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'S':
@@ -75,6 +77,9 @@ int main(int argc, char **argv)
 			break;
 		case 'X':
 			xdp_devmap_attached = true;
+			break;
+		case 'Q':
+			queue = true;
 			break;
 		case 'i':
 			interval = strtoul(optarg, NULL, 0);
@@ -95,6 +100,12 @@ int main(int argc, char **argv)
 	}
 
 	if (argc <= optind + 1) {
+		sample_usage(argv, long_options, __doc__, mask, true);
+		goto end;
+	}
+
+	if (queue && (generic || xdp_devmap_attached)) {
+		fprintf(stderr, "Can't combine queue mode with load-egress or skb-mode\n");
 		sample_usage(argv, long_options, __doc__, mask, true);
 		goto end;
 	}
@@ -147,6 +158,7 @@ int main(int argc, char **argv)
 
 	skel->rodata->from_match[0] = ifindex_in;
 	skel->rodata->to_match[0] = ifindex_out;
+	skel->rodata->tgt_ifindex = ifindex_out;
 
 	ret = xdp_redirect_map__load(skel);
 	if (ret < 0) {
@@ -163,7 +175,7 @@ int main(int argc, char **argv)
 		goto end_destroy;
 	}
 
-	prog = skel->progs.xdp_redirect_map_native;
+	prog = queue ? skel->progs.xdp_redirect_map_queue : skel->progs.xdp_redirect_map_native;
 	tx_port_map = skel->maps.tx_port_native;
 restart:
 	if (sample_install_xdp(prog, ifindex_in, generic, force) < 0) {
@@ -184,6 +196,12 @@ restart:
 
 	/* Loading dummy XDP prog on out-device */
 	sample_install_xdp(skel->progs.xdp_redirect_dummy_prog, ifindex_out, generic, force);
+
+	if (queue && sample_install_xdp_dequeue(skel->progs.xdp_redirect_deq_func,
+						ifindex_out, force) < 0) {
+		ret = EXIT_FAIL;
+		goto end_destroy;
+	}
 
 	devmap_val.ifindex = ifindex_out;
 	if (xdp_devmap_attached)

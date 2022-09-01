@@ -1280,11 +1280,10 @@ static int __sample_remove_xdp(int ifindex, __u32 prog_id, int xdp_flags)
 	return bpf_xdp_detach(ifindex, xdp_flags, NULL);
 }
 
-int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
-		       bool force)
+static int __sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, int xdp_flags)
 {
-	int ret, xdp_flags = 0;
 	__u32 prog_id = 0;
+	int ret;
 
 	if (sample_xdp_cnt == 32) {
 		fprintf(stderr,
@@ -1292,8 +1291,6 @@ int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
 		return -ENOTSUP;
 	}
 
-	xdp_flags |= !force ? XDP_FLAGS_UPDATE_IF_NOEXIST : 0;
-	xdp_flags |= generic ? XDP_FLAGS_SKB_MODE : XDP_FLAGS_DRV_MODE;
 	ret = bpf_xdp_attach(ifindex, bpf_program__fd(xdp_prog), xdp_flags, NULL);
 	if (ret < 0) {
 		ret = -errno;
@@ -1301,7 +1298,9 @@ int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
 			"Failed to install program \"%s\" on ifindex %d, mode = %s, "
 			"force = %s: %s\n",
 			bpf_program__name(xdp_prog), ifindex,
-			generic ? "skb" : "native", force ? "true" : "false",
+			(xdp_flags & XDP_FLAGS_SKB_MODE) ? "skb" :
+			  ((xdp_flags & XDP_FLAGS_DEQUEUE_MODE) ? "dequeue" : "native"),
+			(xdp_flags & XDP_FLAGS_UPDATE_IF_NOEXIST) ? "false" : "true",
 			strerror(-ret));
 		return ret;
 	}
@@ -1319,6 +1318,27 @@ int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
 		(struct xdp_desc){ ifindex, prog_id, xdp_flags };
 
 	return 0;
+}
+
+int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
+		       bool force)
+{
+	int xdp_flags = generic ? XDP_FLAGS_SKB_MODE : XDP_FLAGS_DRV_MODE;
+
+	if (!force)
+		xdp_flags |= XDP_FLAGS_UPDATE_IF_NOEXIST;
+
+	return __sample_install_xdp(xdp_prog, ifindex, xdp_flags);
+}
+
+int sample_install_xdp_dequeue(struct bpf_program *xdp_prog, int ifindex, bool force)
+{
+	int xdp_flags = XDP_FLAGS_DEQUEUE_MODE;
+
+	if (!force)
+		xdp_flags |= XDP_FLAGS_UPDATE_IF_NOEXIST;
+
+	return __sample_install_xdp(xdp_prog, ifindex, xdp_flags);
 }
 
 static void sample_summary_print(void)

@@ -32,8 +32,18 @@ struct {
 	__uint(max_entries, 1);
 } tx_port_native SEC(".maps");
 
+struct pifo_map {
+	__uint(type, BPF_MAP_TYPE_PIFO_XDP);
+	__uint(key_size, sizeof(__u32));
+	__uint(value_size, sizeof(__u32));
+	__uint(max_entries, 10240);
+	__uint(map_extra, 8192); /* range */
+} pifo SEC(".maps");
+
+
 /* store egress interface mac address */
 const volatile __u8 tx_mac_addr[ETH_ALEN];
+const volatile int tgt_ifindex;
 
 static __always_inline int xdp_redirect_map(struct xdp_md *ctx, void *redirect_map)
 {
@@ -92,6 +102,31 @@ SEC("xdp")
 int xdp_redirect_dummy_prog(struct xdp_md *ctx)
 {
 	return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_redirect_map_queue(struct xdp_md *ctx)
+{
+	int ret;
+	ret = xdp_redirect_map(ctx, &pifo);
+
+	if (ret == XDP_REDIRECT)
+		bpf_schedule_iface_dequeue(ctx, tgt_ifindex, 0);
+
+	return ret;
+}
+
+SEC("xdp_dequeue")
+void *xdp_redirect_deq_func(struct dequeue_ctx *ctx)
+{
+	struct xdp_md *pkt;
+	__u64 prio = 0;
+
+	pkt = (void *)bpf_packet_dequeue(ctx, &pifo, 0, &prio);
+	if (!pkt)
+		return NULL;
+
+	return pkt;
 }
 
 char _license[] SEC("license") = "GPL";

@@ -38,6 +38,8 @@ int sample_run(int interval, void (*post_cb)(void *), void *ctx);
 void sample_switch_mode(void);
 int sample_install_xdp(struct bpf_program *xdp_prog, int ifindex, bool generic,
 		       bool force);
+int sample_install_xdp_dequeue(struct bpf_program *xdp_prog, int ifindex,
+			       bool force);
 void sample_usage(char *argv[], const struct option *long_options,
 		  const char *doc, int mask, bool error);
 
