@@ -88,9 +88,11 @@ void test_xdp_pifo(void)
 	test_xdp_pifo__destroy(skel);
 }
 
-void test_xdp_pifo_live(void)
+static void __test_xdp_pifo_live(struct test_xdp_pifo *skel,
+				 struct bpf_program *xdp_prog,
+				 struct bpf_program *dequeue_prog,
+				 bool new_netns)
 {
-	struct test_xdp_pifo *skel = NULL;
 	int err, ifindex_src, ifindex_dst;
 	int xdp_prog_fd, dequeue_prog_fd;
 	struct nstoken *nstoken = NULL;
@@ -100,14 +102,12 @@ void test_xdp_pifo_live(void)
 	LIBBPF_OPTS(bpf_xdp_attach_opts, opts,
 		    .old_prog_fd = -1);
 
-	skel = test_xdp_pifo__open();
-	if (!ASSERT_OK_PTR(skel, "skel"))
-		return;
-
-	SYS("ip netns add testns");
-	nstoken = open_netns("testns");
-	if (!ASSERT_OK_PTR(nstoken, "setns"))
-		goto out;
+	if (new_netns) {
+		SYS("ip netns add testns");
+		nstoken = open_netns("testns");
+		if (!ASSERT_OK_PTR(nstoken, "setns"))
+			goto out;
+	}
 
 	SYS("ip link add veth_src type veth peer name veth_dst");
 	SYS("ip link set dev veth_src up");
@@ -130,13 +130,16 @@ void test_xdp_pifo_live(void)
 		goto out;
 	skel->links.xdp_check_pkt = link;
 
-	xdp_prog_fd = bpf_program__fd(skel->progs.xdp_pifo);
-	dequeue_prog_fd = bpf_program__fd(skel->progs.dequeue_pifo);
+	xdp_prog_fd = bpf_program__fd(xdp_prog);
 	data = pkt_v4;
 
-	err = bpf_xdp_attach(ifindex_src, dequeue_prog_fd, xdp_flags, &opts);
-	if (!ASSERT_OK(err, "attach-dequeue"))
-		goto out;
+	if (dequeue_prog) {
+		dequeue_prog_fd = bpf_program__fd(dequeue_prog);
+
+		err = bpf_xdp_attach(ifindex_src, dequeue_prog_fd, xdp_flags, &opts);
+		if (!ASSERT_OK(err, "attach-dequeue"))
+			goto out;
+	}
 
 	run_xdp_prog(xdp_prog_fd, &data, sizeof(data), 3);
 
@@ -145,13 +148,40 @@ void test_xdp_pifo_live(void)
 
 	ASSERT_EQ(skel->bss->seen_good_pkts, 3, "live packets OK");
 
-	opts.old_prog_fd = dequeue_prog_fd;
-	err = bpf_xdp_attach(ifindex_src, -1, xdp_flags, &opts);
-	ASSERT_OK(err, "dequeue-detach");
+	if (dequeue_prog) {
+		opts.old_prog_fd = dequeue_prog_fd;
+		err = bpf_xdp_attach(ifindex_src, -1, xdp_flags, &opts);
+		ASSERT_OK(err, "dequeue-detach");
+	}
 
 out:
 	test_xdp_pifo__destroy(skel);
-	if (nstoken)
-		close_netns(nstoken);
-	system("ip netns del testns");
+	SYS("ip link del dev veth_src");
+	if (new_netns) {
+		if (nstoken)
+			close_netns(nstoken);
+		system("ip netns del testns");
+	}
+}
+
+void test_xdp_pifo_live(void)
+{
+	struct test_xdp_pifo *skel = NULL;
+
+	skel = test_xdp_pifo__open();
+	if (!ASSERT_OK_PTR(skel, "skel"))
+		return;
+
+	__test_xdp_pifo_live(skel, skel->progs.xdp_pifo, skel->progs.dequeue_pifo, true);
+}
+
+void test_xdp_pifo_live_timer(void)
+{
+	struct test_xdp_pifo *skel = NULL;
+
+	skel = test_xdp_pifo__open();
+	if (!ASSERT_OK_PTR(skel, "skel"))
+		return;
+
+	__test_xdp_pifo_live(skel, skel->progs.xdp_pifo_timer, NULL, false);
 }
