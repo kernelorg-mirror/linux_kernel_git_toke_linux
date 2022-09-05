@@ -5418,6 +5418,40 @@ union bpf_attr {
  *		*bpf_packet_dequeue()* (and checked to not be NULL).
  *	Return
  *		This always succeeds and returns zero.
+ *
+ * long bpf_packet_dequeue_xdp(struct bpf_map *map, u64 flags, u64 *rank)
+ *	Description
+ *		Dequeue the packet at the head of the PIFO in *map* and return a pointer
+ *		to the packet (or NULL if the PIFO is empty).
+ *	Return
+ *		On success, a pointer to the packet, or NULL if the PIFO is empty. The
+ *		packet pointer must be freed using *bpf_packet_drop()* or returning
+ *		the packet pointer. The *rank* pointer will be set to the rank of
+ *		the dequeued packet on success, or a negative error code on error.
+ *
+ * long bpf_packet_drop_xdp(void *pkt)
+ *	Description
+ *		Drop *pkt*, which must be a reference previously returned by
+ *		*bpf_packet_dequeue()* (and checked to not be NULL).
+ *	Return
+ *		This always succeeds and returns zero.
+ *
+ * long bpf_packet_send(void *pkt, int ifindex, u64 flags)
+ *	Description
+ *		Send *pkt*, on *ifindex*. The *pkt* pointer must be a reference
+ *		previously returned by *bpf_packet_dequeue()* (and checked to
+ *		not be NULL).
+ *	Return
+ *		0 on success, or a negative error code.
+ *
+ * long bpf_packet_flush(void)
+ *	Description
+ *		Flush packets previously sent by *bpf_packet_send()*. Must be
+ *		called between using bpf_packet_send() and exiting the program;
+ *		however, bpf_packet_send() can be called multiple times before
+ *		calling bpf_packet_flush().
+ *	Return
+ *		This always succeeds and returns zero.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -5631,6 +5665,10 @@ union bpf_attr {
 	FN(ktime_get_tai_ns),		\
 	FN(packet_dequeue),		\
 	FN(packet_drop),		\
+	FN(packet_dequeue_xdp),	\
+	FN(packet_drop_xdp),		\
+	FN(packet_send),		\
+	FN(packet_flush),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper

@@ -4435,8 +4435,7 @@ static const struct bpf_func_proto bpf_xdp_redirect_map_proto = {
 
 BTF_ID_LIST_SINGLE(xdp_md_btf_ids, struct, xdp_md)
 
-BPF_CALL_4(bpf_packet_dequeue, struct dequeue_data *, ctx, struct bpf_map *, map,
-	   u64, flags, u64 *, rank)
+static u64 __bpf_packet_dequeue(struct bpf_map *map, u64 flags, u64 *rank)
 {
 	switch (map->map_type) {
 	case BPF_MAP_TYPE_PIFO_XDP:
@@ -4448,6 +4447,12 @@ BPF_CALL_4(bpf_packet_dequeue, struct dequeue_data *, ctx, struct bpf_map *, map
 	default:
 		return 0;
 	}
+}
+
+BPF_CALL_4(bpf_packet_dequeue, struct dequeue_data *, ctx, struct bpf_map *, map,
+	   u64, flags, u64 *, rank)
+{
+	return __bpf_packet_dequeue(map, flags, rank);
 }
 
 static const struct bpf_func_proto bpf_packet_dequeue_proto = {
@@ -4474,6 +4479,72 @@ static const struct bpf_func_proto bpf_packet_drop_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 	.arg2_type      = ARG_PTR_TO_BTF_ID | OBJ_RELEASE,
 	.arg2_btf_id	= xdp_md_btf_ids,
+};
+
+BPF_CALL_3(bpf_packet_dequeue_xdp, struct bpf_map *, map, u64, flags, u64 *, rank)
+{
+	return __bpf_packet_dequeue(map, flags, rank);
+}
+
+static const struct bpf_func_proto bpf_packet_dequeue_xdp_proto = {
+	.func           = bpf_packet_dequeue_xdp,
+	.gpl_only       = false,
+	.ret_type       = RET_PTR_TO_BTF_ID_OR_NULL,
+	.ret_btf_id	= xdp_md_btf_ids,
+	.arg1_type      = ARG_CONST_MAP_PTR,
+	.arg2_type      = ARG_ANYTHING,
+	.arg3_type      = ARG_PTR_TO_LONG,
+};
+
+BPF_CALL_1(bpf_packet_drop_xdp, struct xdp_frame *, pkt)
+{
+	xdp_return_frame(pkt);
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_packet_drop_xdp_proto = {
+	.func           = bpf_packet_drop_xdp,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_BTF_ID | OBJ_RELEASE,
+	.arg1_btf_id	= xdp_md_btf_ids,
+};
+
+BPF_CALL_3(bpf_packet_send, struct xdp_frame *, pkt, int, ifindex, u64, flags)
+{
+	struct net_device *dev;
+
+	if (flags)
+		return -EINVAL;
+
+	/* FIXME: need real netns selection here */
+	dev = dev_get_by_index_rcu(&init_net, ifindex);
+	if (unlikely(!dev))
+		return -EINVAL;
+
+	return dev_xdp_enqueue(dev, pkt, dev);
+}
+
+static const struct bpf_func_proto bpf_packet_send_proto = {
+	.func           = bpf_packet_send,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_BTF_ID | OBJ_RELEASE,
+	.arg1_btf_id    = xdp_md_btf_ids,
+	.arg2_type      = ARG_ANYTHING,
+	.arg3_type      = ARG_ANYTHING,
+};
+
+BPF_CALL_0(bpf_packet_flush)
+{
+	__dev_flush();
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_packet_flush_proto = {
+	.func           = bpf_packet_flush,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
 };
 
 static unsigned long bpf_skb_copy(void *dst_buff, const void *skb,
@@ -7979,6 +8050,14 @@ xdp_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_xdp_fib_lookup_proto;
 	case BPF_FUNC_check_mtu:
 		return &bpf_xdp_check_mtu_proto;
+	case BPF_FUNC_packet_dequeue_xdp:
+		return &bpf_packet_dequeue_xdp_proto;
+	case BPF_FUNC_packet_drop_xdp:
+		return &bpf_packet_drop_xdp_proto;
+	case BPF_FUNC_packet_send:
+		return &bpf_packet_send_proto;
+	case BPF_FUNC_packet_flush:
+		return &bpf_packet_flush_proto;
 #ifdef CONFIG_INET
 	case BPF_FUNC_sk_lookup_udp:
 		return &bpf_xdp_sk_lookup_udp_proto;
