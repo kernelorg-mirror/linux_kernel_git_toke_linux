@@ -61,9 +61,10 @@ int main(int argc, char **argv)
 	bool tried = false;
 	bool queue = false;
 	bool error = true;
+	bool timer = false;
 	int opt, key = 0;
 
-	while ((opt = getopt_long(argc, argv, "hSFQXi:vs",
+	while ((opt = getopt_long(argc, argv, "hSFQtXi:vs",
 				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'S':
@@ -80,6 +81,9 @@ int main(int argc, char **argv)
 			break;
 		case 'Q':
 			queue = true;
+			break;
+		case 't':
+			timer = true;
 			break;
 		case 'i':
 			interval = strtoul(optarg, NULL, 0);
@@ -104,7 +108,7 @@ int main(int argc, char **argv)
 		goto end;
 	}
 
-	if (queue && (generic || xdp_devmap_attached)) {
+	if ((queue || timer) && (generic || xdp_devmap_attached)) {
 		fprintf(stderr, "Can't combine queue mode with load-egress or skb-mode\n");
 		sample_usage(argv, long_options, __doc__, mask, true);
 		goto end;
@@ -175,7 +179,9 @@ int main(int argc, char **argv)
 		goto end_destroy;
 	}
 
-	prog = queue ? skel->progs.xdp_redirect_map_queue : skel->progs.xdp_redirect_map_native;
+	prog = timer ? skel->progs.xdp_redirect_map_timer : (queue ?
+							     skel->progs.xdp_redirect_map_queue :
+							     skel->progs.xdp_redirect_map_native);
 	tx_port_map = skel->maps.tx_port_native;
 restart:
 	if (sample_install_xdp(prog, ifindex_in, generic, force) < 0) {
