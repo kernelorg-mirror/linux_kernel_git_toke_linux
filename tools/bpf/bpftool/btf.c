@@ -461,8 +461,10 @@ static void __printf(2, 0) btf_dump_printf(void *ctx,
 }
 
 static int dump_btf_c(const struct btf *btf,
-		      __u32 *root_type_ids, int root_type_cnt)
+		      __u32 *root_type_ids, int root_type_cnt,
+		      bool split_header)
 {
+	const char *guard_name = split_header ? "__VMLINUX_SPLIT_H__" : "__VMLINUX_H__";
 	struct btf_dump *d;
 	int err = 0, i;
 
@@ -470,9 +472,13 @@ static int dump_btf_c(const struct btf *btf,
 	if (!d)
 		return -errno;
 
-	printf("#ifndef __VMLINUX_H__\n");
-	printf("#define __VMLINUX_H__\n");
+	printf("#ifndef %s\n", guard_name);
+	printf("#define %s\n", guard_name);
 	printf("\n");
+	if (split_header) {
+		printf("#include \"vmlinux.h\"\n");
+		printf("\n");
+	}
 	printf("#ifndef BPF_NO_PRESERVE_ACCESS_INDEX\n");
 	printf("#pragma clang attribute push (__attribute__((preserve_access_index)), apply_to = record)\n");
 	printf("#endif\n\n");
@@ -485,8 +491,17 @@ static int dump_btf_c(const struct btf *btf,
 		}
 	} else {
 		int cnt = btf__type_cnt(btf);
+		int start_id = 1;
 
-		for (i = 1; i < cnt; i++) {
+		if (split_header) {
+			const struct btf *base;
+
+			base = btf__base_btf(btf);
+			if (base)
+				start_id = btf__type_cnt(base);
+		}
+
+		for (i = start_id; i < cnt; i++) {
 			err = btf_dump__dump_type(d, i);
 			if (err)
 				goto done;
@@ -497,7 +512,7 @@ static int dump_btf_c(const struct btf *btf,
 	printf("#pragma clang attribute pop\n");
 	printf("#endif\n");
 	printf("\n");
-	printf("#endif /* __VMLINUX_H__ */\n");
+	printf("#endif /* %s */\n", guard_name);
 
 done:
 	btf_dump__free(d);
@@ -549,10 +564,10 @@ static bool btf_is_kernel_module(__u32 btf_id)
 
 static int do_dump(int argc, char **argv)
 {
+	bool dump_c = false, split_header = false;
 	struct btf *btf = NULL, *base = NULL;
 	__u32 root_type_ids[2];
 	int root_type_cnt = 0;
-	bool dump_c = false;
 	__u32 btf_id = -1;
 	const char *src;
 	int fd = -1;
@@ -654,10 +669,13 @@ static int do_dump(int argc, char **argv)
 			}
 			if (strcmp(*argv, "c") == 0) {
 				dump_c = true;
+			} else if (strcmp(*argv, "split-c") == 0) {
+				dump_c = true;
+				split_header = true;
 			} else if (strcmp(*argv, "raw") == 0) {
 				dump_c = false;
 			} else {
-				p_err("unrecognized format specifier: '%s', possible values: raw, c",
+				p_err("unrecognized format specifier: '%s', possible values: raw, c, split-c",
 				      *argv);
 				err = -EINVAL;
 				goto done;
@@ -691,7 +709,7 @@ static int do_dump(int argc, char **argv)
 			err = -ENOTSUP;
 			goto done;
 		}
-		err = dump_btf_c(btf, root_type_ids, root_type_cnt);
+		err = dump_btf_c(btf, root_type_ids, root_type_cnt, split_header);
 	} else {
 		err = dump_btf_raw(btf, root_type_ids, root_type_cnt);
 	}
