@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <libgen.h>
 #include <linux/btf.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -460,17 +461,49 @@ static void __printf(2, 0) btf_dump_printf(void *ctx,
 	vfprintf(stdout, fmt, args);
 }
 
+static int mk_guard(char *buf, size_t buflen, const char *name)
+{
+	char *dst = buf, *end = buf + buflen - 1;
+	const char suffix[5] = "_H__";
+	const char prefix[3] = "__";
+	const char *src;
+
+	for (src = prefix; *src && dst < end; src++, dst++)
+		*dst = *src;
+
+	for (src = name; *src && dst < end; src++, dst++) {
+		if (*src >= 'a' && *src <= 'z')
+			*dst = *src - 32; /* to upper-case */
+		else if ((*src >= '0' && *src <= '9') ||
+			 (*src >= 'A' && *src <= 'Z'))
+			*dst = *src;
+		else
+			*dst = '_';
+	}
+
+	for (src = suffix; *src && dst < end; src++, dst++)
+		*dst = *src;
+
+	*dst = '\0';
+
+	return *src ? -E2BIG : 0;
+}
+
 static int dump_btf_c(const struct btf *btf,
 		      __u32 *root_type_ids, int root_type_cnt,
-		      bool split_header)
+		      bool split_header, const char *btf_name)
 {
-	const char *guard_name = split_header ? "__VMLINUX_SPLIT_H__" : "__VMLINUX_H__";
+	char guard_name[100];
 	struct btf_dump *d;
 	int err = 0, i;
 
 	d = btf_dump__new(btf, btf_dump_printf, NULL, NULL);
 	if (!d)
 		return -errno;
+
+	err = mk_guard(guard_name, sizeof(guard_name), btf_name);
+	if (err)
+		return err;
 
 	printf("#ifndef %s\n", guard_name);
 	printf("#define %s\n", guard_name);
@@ -535,10 +568,9 @@ static struct btf *get_vmlinux_btf_from_sysfs(void)
 
 #define BTF_NAME_BUFF_LEN 64
 
-static bool btf_is_kernel_module(__u32 btf_id)
+static bool btf_is_kernel_module(__u32 btf_id, char *btf_name, size_t btf_name_len)
 {
 	struct bpf_btf_info btf_info = {};
-	char btf_name[BTF_NAME_BUFF_LEN];
 	int btf_fd;
 	__u32 len;
 	int err;
@@ -551,7 +583,7 @@ static bool btf_is_kernel_module(__u32 btf_id)
 
 	len = sizeof(btf_info);
 	btf_info.name = ptr_to_u64(btf_name);
-	btf_info.name_len = sizeof(btf_name);
+	btf_info.name_len = btf_name_len;
 	err = bpf_obj_get_info_by_fd(btf_fd, &btf_info, &len);
 	close(btf_fd);
 	if (err) {
@@ -559,12 +591,13 @@ static bool btf_is_kernel_module(__u32 btf_id)
 		return false;
 	}
 
-	return btf_info.kernel_btf && strncmp(btf_name, "vmlinux", sizeof(btf_name)) != 0;
+	return btf_info.kernel_btf && strncmp(btf_name, "vmlinux", btf_name_len) != 0;
 }
 
 static int do_dump(int argc, char **argv)
 {
 	bool dump_c = false, split_header = false;
+	char btf_name[BTF_NAME_BUFF_LEN] = {};
 	struct btf *btf = NULL, *base = NULL;
 	__u32 root_type_ids[2];
 	int root_type_cnt = 0;
@@ -652,6 +685,8 @@ static int do_dump(int argc, char **argv)
 			      *argv, strerror(errno));
 			goto done;
 		}
+		strncpy(btf_name, basename(*argv), sizeof(btf_name));
+		btf_name[sizeof(btf_name) - 1] = '\0';
 		NEXT_ARG();
 	} else {
 		err = -1;
@@ -689,7 +724,7 @@ static int do_dump(int argc, char **argv)
 	}
 
 	if (!btf) {
-		if (!base_btf && btf_is_kernel_module(btf_id)) {
+		if (!base_btf && btf_is_kernel_module(btf_id, btf_name, sizeof(btf_name))) {
 			p_info("Warning: valid base BTF was not specified with -B option, falling back to standard base BTF (%s)",
 			       sysfs_vmlinux);
 			base_btf = get_vmlinux_btf_from_sysfs();
@@ -704,12 +739,39 @@ static int do_dump(int argc, char **argv)
 	}
 
 	if (dump_c) {
+		const char *header_name = "vmlinux";
+
 		if (json_output) {
 			p_err("JSON output for C-syntax dump is not supported");
 			err = -ENOTSUP;
 			goto done;
 		}
-		err = dump_btf_c(btf, root_type_ids, root_type_cnt, split_header);
+		if (split_header) {
+			size_t len = strnlen(btf_name, sizeof(btf_name));
+
+			if (!base_btf) {
+				p_err("Can't output a split-c header without a base BTF object");
+				err = -ENOTSUP;
+				goto done;
+			}
+
+			if (len && len < sizeof(btf_name)) {
+				/* cut off .o or .ko ending if present so the
+				 * name matches the kernel module name when
+				 * loaded into the kernel
+				 */
+				if (len > 2 && !strcmp(&btf_name[len-2], ".o"))
+					btf_name[len-2] = '\0';
+				else if (len > 3 && !strcmp(&btf_name[len-3], ".ko"))
+					btf_name[len-3] = '\0';
+
+				header_name = btf_name;
+			} else {
+				header_name = "vmlinux_split";
+			}
+		}
+		err = dump_btf_c(btf, root_type_ids, root_type_cnt,
+				 split_header, header_name);
 	} else {
 		err = dump_btf_raw(btf, root_type_ids, root_type_cnt);
 	}
