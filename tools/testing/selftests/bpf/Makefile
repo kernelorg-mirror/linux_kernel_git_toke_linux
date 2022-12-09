@@ -134,15 +134,23 @@ HOST_BPFOBJ := $(HOST_BUILD_DIR)/libbpf/libbpf.a
 RESOLVE_BTFIDS := $(HOST_BUILD_DIR)/resolve_btfids/resolve_btfids
 RUNQSLOWER_OUTPUT := $(BUILD_DIR)/runqslower/
 
-VMLINUX_BTF_PATHS ?= $(if $(O),$(O)/vmlinux)				\
-		     $(if $(KBUILD_OUTPUT),$(KBUILD_OUTPUT)/vmlinux)	\
-		     ../../../../vmlinux				\
-		     /sys/kernel/btf/vmlinux				\
-		     /boot/vmlinux-$(shell uname -r)
-VMLINUX_BTF ?= $(abspath $(firstword $(wildcard $(VMLINUX_BTF_PATHS))))
+FIND_FIRST_PATH = $(abspath $(firstword $(wildcard $(1))))
+BTF_OBJECT_DIRS ?= $(O) $(KBUILD_OUTPUT) ../../../..
+VMLINUX_BTF_PATHS ?= $(BTF_OBJECT_DIRS:=/vmlinux) /sys/kernel/btf/vmlinux /boot/vmlinux-$(shell uname -r)
+VMLINUX_BTF ?= $(call FIND_FIRST_PATH,$(VMLINUX_BTF_PATHS))
 ifeq ($(VMLINUX_BTF),)
 $(error Cannot find a vmlinux for VMLINUX_BTF at any of "$(VMLINUX_BTF_PATHS)")
 endif
+
+# Modules we need BTF header files for
+MODULE_BTFS := net/netfilter/nf_conntrack net/netfilter/nf_nat
+
+# Header files for $(MODULE_BTFS)
+MODULE_H = $(foreach mod,$(MODULE_BTFS),$(call MODULE_H_FOR_MOD,$(mod)))
+
+# Helper definitions used with $(call) above and in the rule generator below
+FIND_MODULE = $(call FIND_FIRST_PATH,$(addsuffix /$(1).ko,$(BTF_OBJECT_DIRS)) /sys/kernel/btf/$(notdir $(1)))
+MODULE_H_FOR_MOD = $(addsuffix .h,$(addprefix $(INCLUDE_DIR)/,$(notdir $(1))))
 
 # Define simple and short `make test_progs`, `make test_sysctl`, etc targets
 # to build individual tests.
@@ -291,6 +299,24 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
+# Each module header needs its own module as a dependency, so define a
+# template to pass through $(eval $(call))
+define MODULE_H_TGT
+ifeq ($(call FIND_MODULE,$(1)),)
+# Module not found, so assume it's builtin and generate a stub file that just
+# includes vmlinux.h
+$(call MODULE_H_FOR_MOD,$(1)): | $(INCLUDE_DIR)
+	$(call msg,GEN-STUB,,$$@)
+	$(Q)echo "#include \"vmlinux.h\"" > $$@
+else
+$(call MODULE_H_FOR_MOD,$(1)): $(call FIND_MODULE,$(1)) $(BPFTOOL) | $(INCLUDE_DIR)
+	$(call msg,GEN,,$$@)
+	$(Q)$(BPFTOOL) btf dump file $$< -B $(VMLINUX_BTF) format split-c > $$@
+endif
+endef
+$(foreach mod,$(MODULE_BTFS),$(eval $(call MODULE_H_TGT,$(mod))))
+
+
 $(RESOLVE_BTFIDS): $(HOST_BPFOBJ) | $(HOST_BUILD_DIR)/resolve_btfids	\
 		       $(TOOLSDIR)/bpf/resolve_btfids/main.c	\
 		       $(TOOLSDIR)/lib/rbtree.c			\
@@ -436,6 +462,7 @@ $(TRUNNER_BPF_OBJS): $(TRUNNER_OUTPUT)/%.bpf.o:				\
 		     $(TRUNNER_BPF_PROGS_DIR)/%.c			\
 		     $(TRUNNER_BPF_PROGS_DIR)/*.h			\
 		     $$(INCLUDE_DIR)/vmlinux.h				\
+		     $$(MODULE_H)					\
 		     $(wildcard $(BPFDIR)/bpf_*.h)			\
 		     $(wildcard $(BPFDIR)/*.bpf.h)			\
 		     | $(TRUNNER_OUTPUT) $$(BPFOBJ)
