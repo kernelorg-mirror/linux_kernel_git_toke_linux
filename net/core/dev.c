@@ -3142,6 +3142,21 @@ void netif_tx_wake_queue(struct netdev_queue *dev_queue)
 }
 EXPORT_SYMBOL(netif_tx_wake_queue);
 
+void netif_tx_schedule_bpf_timer(struct bpf_timer_nettx *timer)
+{
+	bool need_bh_off = !(hardirq_count() | softirq_count());
+
+	WARN_ON_ONCE(need_bh_off);
+
+	if (!timer->next) {
+		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+		timer->next = sd->bpf_timers;
+		sd->bpf_timers = timer;
+		raise_softirq_irqoff(NET_TX_SOFTIRQ);
+	}
+}
+
 void dev_kfree_skb_irq_reason(struct sk_buff *skb, enum skb_drop_reason reason)
 {
 	unsigned long flags;
@@ -5123,6 +5138,17 @@ EXPORT_SYMBOL(netif_rx);
 static __latent_entropy void net_tx_action(struct softirq_action *h)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+	if (sd->bpf_timers) {
+		struct bpf_timer_nettx *timers;
+
+		local_irq_disable();
+		timers = sd->bpf_timers;
+		sd->bpf_timers = NULL;
+		local_irq_enable();
+
+		bpf_run_nettx_timers(timers);
+	}
 
 	if (sd->completion_queue) {
 		struct sk_buff *clist;

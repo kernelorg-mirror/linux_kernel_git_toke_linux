@@ -7356,10 +7356,17 @@ struct bpf_core_relo {
  *     - BPF_F_TIMER_ABS: Timeout passed is absolute time, by default it is
  *       relative to current time.
  *     - BPF_F_TIMER_CPU_PIN: Timer will be pinned to the CPU of the caller.
+ *     - BPF_F_TIMER_IMMEDIATE: Timer callback is called immediately. Only
+ *       valid for net_tx timers
  */
 enum {
 	BPF_F_TIMER_ABS = (1ULL << 0),
 	BPF_F_TIMER_CPU_PIN = (1ULL << 1),
+	BPF_F_TIMER_IMMEDIATE = (1ULL << 2),
+};
+
+enum {
+	BPF_F_TIMER_NET_TX = 16,
 };
 
 /* BPF numbers iterator state */

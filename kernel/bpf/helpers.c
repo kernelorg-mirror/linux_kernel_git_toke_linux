@@ -1093,11 +1093,13 @@ const struct bpf_func_proto bpf_snprintf_proto = {
  * freeing the timers when inner map is replaced or deleted by user space.
  */
 struct bpf_hrtimer {
+	struct bpf_timer_nettx net_timer;
 	struct hrtimer timer;
 	struct bpf_map *map;
 	struct bpf_prog *prog;
 	void __rcu *callback_fn;
 	void *value;
+	bool is_net_timer;
 };
 
 /* the actual struct hidden inside uapi struct bpf_timer */
@@ -1151,26 +1153,48 @@ out:
 	return HRTIMER_NORESTART;
 }
 
+static enum hrtimer_restart bpf_timer_cb_nettx(struct hrtimer *hrtimer)
+{
+	struct bpf_hrtimer *t = container_of(hrtimer, struct bpf_hrtimer, timer);
+
+	netif_tx_schedule_bpf_timer(&t->net_timer);
+	return HRTIMER_NORESTART;
+}
+
+void bpf_run_nettx_timers(struct bpf_timer_nettx *timer)
+{
+	while (timer) {
+		struct bpf_hrtimer *hrt = container_of(timer, struct bpf_hrtimer, net_timer);
+		struct bpf_timer_nettx *next = timer->next;
+
+		timer->next = NULL;
+		bpf_timer_cb(&hrt->timer);
+		timer = next;
+	}
+}
+
 BPF_CALL_3(bpf_timer_init, struct bpf_timer_kern *, timer, struct bpf_map *, map,
 	   u64, flags)
 {
 	clockid_t clockid = flags & (MAX_CLOCKS - 1);
+	bool net_timer = flags & BPF_F_TIMER_NET_TX; // FIXME: Should only be allowed from XDP programs
 	struct bpf_hrtimer *t;
 	int ret = 0;
 
-	BUILD_BUG_ON(MAX_CLOCKS != 16);
+	BUILD_BUG_ON(MAX_CLOCKS != BPF_F_TIMER_NET_TX);
 	BUILD_BUG_ON(sizeof(struct bpf_timer_kern) > sizeof(struct bpf_timer));
 	BUILD_BUG_ON(__alignof__(struct bpf_timer_kern) != __alignof__(struct bpf_timer));
 
 	if (in_nmi())
 		return -EOPNOTSUPP;
 
-	if (flags >= MAX_CLOCKS ||
+	if (flags > BPF_F_TIMER_NET_TX ||
 	    /* similar to timerfd except _ALARM variants are not supported */
 	    (clockid != CLOCK_MONOTONIC &&
 	     clockid != CLOCK_REALTIME &&
 	     clockid != CLOCK_BOOTTIME))
 		return -EINVAL;
+
 	__bpf_spin_lock_irqsave(&timer->lock);
 	t = timer->timer;
 	if (t) {
@@ -1193,9 +1217,10 @@ BPF_CALL_3(bpf_timer_init, struct bpf_timer_kern *, timer, struct bpf_map *, map
 	t->value = (void *)timer - map->record->timer_off;
 	t->map = map;
 	t->prog = NULL;
+	t->is_net_timer = net_timer;
 	rcu_assign_pointer(t->callback_fn, NULL);
 	hrtimer_init(&t->timer, clockid, HRTIMER_MODE_REL_SOFT);
-	t->timer.function = bpf_timer_cb;
+	t->timer.function = net_timer ? bpf_timer_cb_nettx : bpf_timer_cb;
 	timer->timer = t;
 out:
 	__bpf_spin_unlock_irqrestore(&timer->lock);
@@ -1272,12 +1297,18 @@ BPF_CALL_3(bpf_timer_start, struct bpf_timer_kern *, timer, u64, nsecs, u64, fla
 
 	if (in_nmi())
 		return -EOPNOTSUPP;
-	if (flags & ~(BPF_F_TIMER_ABS | BPF_F_TIMER_CPU_PIN))
+	if (flags & ~(BPF_F_TIMER_ABS | BPF_F_TIMER_CPU_PIN | BPF_F_TIMER_IMMEDIATE))
 		return -EINVAL;
 	__bpf_spin_lock_irqsave(&timer->lock);
 	t = timer->timer;
-	if (!t || !t->prog) {
+	if (!t || !t->prog ||
+	    ((flags & BPF_F_TIMER_IMMEDIATE) && !t->is_net_timer)) {
 		ret = -EINVAL;
+		goto out;
+	}
+
+	if (flags & BPF_F_TIMER_IMMEDIATE) {
+		netif_tx_schedule_bpf_timer(&t->net_timer);
 		goto out;
 	}
 

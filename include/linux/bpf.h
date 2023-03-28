@@ -1786,6 +1786,11 @@ struct bpf_event_entry {
 	struct rcu_head rcu;
 };
 
+
+struct bpf_timer_nettx {
+	struct bpf_timer_nettx *next;
+};
+
 static inline bool map_type_contains_progs(struct bpf_map *map)
 {
 	return map->map_type == BPF_MAP_TYPE_PROG_ARRAY ||
@@ -2486,6 +2491,9 @@ void bpf_dynptr_set_rdonly(struct bpf_dynptr_kern *ptr);
 
 bool dev_check_flush(void);
 bool cpu_map_check_flush(void);
+
+void bpf_run_nettx_timers(struct bpf_timer_nettx *timer);
+
 #else /* !CONFIG_BPF_SYSCALL */
 static inline struct bpf_prog *bpf_prog_get(u32 ufd)
 {
@@ -2759,6 +2767,11 @@ static inline void bpf_dynptr_set_null(struct bpf_dynptr_kern *ptr)
 static inline void bpf_dynptr_set_rdonly(struct bpf_dynptr_kern *ptr)
 {
 }
+
+static inline void bpf_run_nettx_timers(struct bpf_timer_nettx *timer)
+{
+}
+
 #endif /* CONFIG_BPF_SYSCALL */
 
 static __always_inline int
