@@ -53,15 +53,6 @@
 #define DEV_CREATE_FLAG_MASK \
 	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY)
 
-struct xdp_dev_bulk_queue {
-	struct xdp_frame *q[DEV_MAP_BULK_SIZE];
-	struct list_head flush_node;
-	struct net_device *dev;
-	struct net_device *dev_rx;
-	struct bpf_prog *xdp_prog;
-	unsigned int count;
-};
-
 struct bpf_dtab_netdev {
 	struct net_device *dev; /* must be first member, due to tracepoint */
 	struct hlist_node index_hlist;
@@ -83,7 +74,6 @@ struct bpf_dtab {
 	u32 n_buckets;
 };
 
-static DEFINE_PER_CPU(struct list_head, dev_flush_list);
 static DEFINE_SPINLOCK(dev_map_lock);
 static LIST_HEAD(dev_map_list);
 
@@ -319,115 +309,6 @@ static int dev_map_hash_get_next_key(struct bpf_map *map, void *key,
 	return -ENOENT;
 }
 
-static int dev_map_bpf_prog_run(struct bpf_prog *xdp_prog,
-				struct xdp_frame **frames, int n,
-				struct net_device *dev)
-{
-	struct xdp_txq_info txq = { .dev = dev };
-	struct xdp_buff xdp;
-	int i, nframes = 0;
-
-	for (i = 0; i < n; i++) {
-		struct xdp_frame *xdpf = frames[i];
-		u32 act;
-		int err;
-
-		xdp_convert_frame_to_buff(xdpf, &xdp);
-		xdp.txq = &txq;
-
-		act = bpf_prog_run_xdp(xdp_prog, &xdp);
-		switch (act) {
-		case XDP_PASS:
-			err = xdp_update_frame_from_buff(&xdp, xdpf);
-			if (unlikely(err < 0))
-				xdp_return_frame_rx_napi(xdpf);
-			else
-				frames[nframes++] = xdpf;
-			break;
-		default:
-			bpf_warn_invalid_xdp_action(NULL, xdp_prog, act);
-			fallthrough;
-		case XDP_ABORTED:
-			trace_xdp_exception(dev, xdp_prog, act);
-			fallthrough;
-		case XDP_DROP:
-			xdp_return_frame_rx_napi(xdpf);
-			break;
-		}
-	}
-	return nframes; /* sent frames count */
-}
-
-static void bq_xmit_all(struct xdp_dev_bulk_queue *bq, u32 flags)
-{
-	struct net_device *dev = bq->dev;
-	unsigned int cnt = bq->count;
-	int sent = 0, err = 0;
-	int to_send = cnt;
-	int i;
-
-	if (unlikely(!cnt))
-		return;
-
-	for (i = 0; i < cnt; i++) {
-		struct xdp_frame *xdpf = bq->q[i];
-
-		prefetch(xdpf);
-	}
-
-	if (bq->xdp_prog) {
-		to_send = dev_map_bpf_prog_run(bq->xdp_prog, bq->q, cnt, dev);
-		if (!to_send)
-			goto out;
-	}
-
-	sent = dev->netdev_ops->ndo_xdp_xmit(dev, to_send, bq->q, flags);
-	if (sent < 0) {
-		/* If ndo_xdp_xmit fails with an errno, no frames have
-		 * been xmit'ed.
-		 */
-		err = sent;
-		sent = 0;
-	}
-
-	/* If not all frames have been transmitted, it is our
-	 * responsibility to free them
-	 */
-	for (i = sent; unlikely(i < to_send); i++)
-		xdp_return_frame_rx_napi(bq->q[i]);
-
-out:
-	bq->count = 0;
-	trace_xdp_devmap_xmit(bq->dev_rx, dev, sent, cnt - sent, err);
-}
-
-/* __dev_flush is called from xdp_do_flush() which _must_ be signalled from the
- * driver before returning from its napi->poll() routine. See the comment above
- * xdp_do_flush() in filter.c.
- */
-void __dev_flush(void)
-{
-	struct list_head *flush_list = this_cpu_ptr(&dev_flush_list);
-	struct xdp_dev_bulk_queue *bq, *tmp;
-
-	list_for_each_entry_safe(bq, tmp, flush_list, flush_node) {
-		bq_xmit_all(bq, XDP_XMIT_FLUSH);
-		bq->dev_rx = NULL;
-		bq->xdp_prog = NULL;
-		__list_del_clearprev(&bq->flush_node);
-	}
-}
-
-#ifdef CONFIG_DEBUG_NET
-bool dev_check_flush(void)
-{
-	if (list_empty(this_cpu_ptr(&dev_flush_list)))
-		return false;
-	__dev_flush();
-	return true;
-}
-#endif
-
 /* Elements are kept alive by RCU; either by rcu_read_lock() (from syscall) or
  * by local_bh_disable() (from XDP calls inside NAPI). The
  * rcu_read_lock_bh_held() below makes lockdep accept both.
@@ -443,56 +324,6 @@ static void *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 	obj = rcu_dereference_check(dtab->netdev_map[key],
 				    rcu_read_lock_bh_held());
 	return obj;
-}
-
-/* Runs in NAPI, i.e., softirq under local_bh_disable(). Thus, safe percpu
- * variable access, and map elements stick around. See comment above
- * xdp_do_flush() in filter.c.
- */
-static void bq_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
-		       struct net_device *dev_rx, struct bpf_prog *xdp_prog)
-{
-	struct list_head *flush_list = this_cpu_ptr(&dev_flush_list);
-	struct xdp_dev_bulk_queue *bq = this_cpu_ptr(dev->xdp_bulkq);
-
-	if (unlikely(bq->count == DEV_MAP_BULK_SIZE))
-		bq_xmit_all(bq, 0);
-
-	/* Ingress dev_rx will be the same for all xdp_frame's in
-	 * bulk_queue, because bq stored per-CPU and must be flushed
-	 * from net_device drivers NAPI func end.
-	 *
-	 * Do the same with xdp_prog and flush_list since these fields
-	 * are only ever modified together.
-	 */
-	if (!bq->dev_rx) {
-		bq->dev_rx = dev_rx;
-		bq->xdp_prog = xdp_prog;
-		list_add(&bq->flush_node, flush_list);
-	}
-
-	bq->q[bq->count++] = xdpf;
-}
-
-static inline int __xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
-				struct net_device *dev_rx,
-				struct bpf_prog *xdp_prog)
-{
-	int err;
-
-	if (!(dev->xdp_features & NETDEV_XDP_ACT_NDO_XMIT))
-		return -EOPNOTSUPP;
-
-	if (unlikely(!(dev->xdp_features & NETDEV_XDP_ACT_NDO_XMIT_SG) &&
-		     xdp_frame_has_frags(xdpf)))
-		return -EOPNOTSUPP;
-
-	err = xdp_ok_fwd_dev(dev, xdp_get_frame_len(xdpf));
-	if (unlikely(err))
-		return err;
-
-	bq_enqueue(dev, xdpf, dev_rx, xdp_prog);
-	return 0;
 }
 
 static u32 dev_map_bpf_prog_run_skb(struct sk_buff *skb, struct bpf_dtab_netdev *dst)
@@ -526,18 +357,12 @@ static u32 dev_map_bpf_prog_run_skb(struct sk_buff *skb, struct bpf_dtab_netdev 
 	return act;
 }
 
-int dev_xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
-		    struct net_device *dev_rx)
-{
-	return __xdp_enqueue(dev, xdpf, dev_rx, NULL);
-}
-
 int dev_map_enqueue(struct bpf_dtab_netdev *dst, struct xdp_frame *xdpf,
 		    struct net_device *dev_rx)
 {
 	struct net_device *dev = dst->dev;
 
-	return __xdp_enqueue(dev, xdpf, dev_rx, dst->xdp_prog);
+	return __xdp_enqueue_frame(dev, xdpf, dev_rx, dst->xdp_prog);
 }
 
 static bool is_valid_dst(struct bpf_dtab_netdev *obj, struct xdp_frame *xdpf)
@@ -568,7 +393,7 @@ static int dev_map_enqueue_clone(struct bpf_dtab_netdev *obj,
 	if (!nxdpf)
 		return -ENOMEM;
 
-	bq_enqueue(obj->dev, nxdpf, dev_rx, obj->xdp_prog);
+	xdp_bq_enqueue(obj->dev, nxdpf, dev_rx, obj->xdp_prog);
 
 	return 0;
 }
@@ -665,7 +490,7 @@ int dev_map_enqueue_multi(struct xdp_frame *xdpf, struct net_device *dev_rx,
 
 	/* consume the last copy of the frame */
 	if (last_dst)
-		bq_enqueue(last_dst->dev, xdpf, dev_rx, last_dst->xdp_prog);
+		xdp_bq_enqueue(last_dst->dev, xdpf, dev_rx, last_dst->xdp_prog);
 	else
 		xdp_return_frame_rx_napi(xdpf); /* dtab is empty */
 
@@ -1099,21 +924,9 @@ static int dev_map_notification(struct notifier_block *notifier,
 {
 	struct net_device *netdev = netdev_notifier_info_to_dev(ptr);
 	struct bpf_dtab *dtab;
-	int i, cpu;
+	int i;
 
 	switch (event) {
-	case NETDEV_REGISTER:
-		if (!netdev->netdev_ops->ndo_xdp_xmit || netdev->xdp_bulkq)
-			break;
-
-		/* will be freed in free_netdev() */
-		netdev->xdp_bulkq = alloc_percpu(struct xdp_dev_bulk_queue);
-		if (!netdev->xdp_bulkq)
-			return NOTIFY_BAD;
-
-		for_each_possible_cpu(cpu)
-			per_cpu_ptr(netdev->xdp_bulkq, cpu)->dev = netdev;
-		break;
 	case NETDEV_UNREGISTER:
 		/* This rcu_read_lock/unlock pair is needed because
 		 * dev_map_list is an RCU list AND to ensure a delete
@@ -1155,15 +968,10 @@ static struct notifier_block dev_map_notifier = {
 
 static int __init dev_map_init(void)
 {
-	int cpu;
-
 	/* Assure tracepoint shadow struct _bpf_dtab_netdev is in sync */
 	BUILD_BUG_ON(offsetof(struct bpf_dtab_netdev, dev) !=
 		     offsetof(struct _bpf_dtab_netdev, dev));
 	register_netdevice_notifier(&dev_map_notifier);
-
-	for_each_possible_cpu(cpu)
-		INIT_LIST_HEAD(&per_cpu(dev_flush_list, cpu));
 	return 0;
 }
 

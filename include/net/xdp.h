@@ -193,6 +193,19 @@ static __always_inline bool xdp_frame_is_frag_pfmemalloc(struct xdp_frame *frame
 }
 
 #define XDP_BULK_QUEUE_SIZE	16
+struct xdp_dev_bulk_queue {
+	struct xdp_frame *q[XDP_BULK_QUEUE_SIZE];
+	struct list_head flush_node;
+	struct net_device *dev;
+	struct net_device *dev_rx;
+	struct bpf_prog *xdp_prog;
+	unsigned int count;
+};
+
+void xdp_bq_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
+		    struct net_device *dev_rx, struct bpf_prog *xdp_prog);
+void __xdp_dev_flush(void);
+
 struct xdp_frame_bulk {
 	int count;
 	void *xa;
@@ -511,4 +524,33 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 
 	return act;
 }
+
+static inline int __xdp_enqueue_frame(struct net_device *dev, struct xdp_frame *xdpf,
+				      struct net_device *dev_rx,
+				      struct bpf_prog *xdp_prog)
+{
+	int err;
+
+	if (!(dev->xdp_features & NETDEV_XDP_ACT_NDO_XMIT))
+		return -EOPNOTSUPP;
+
+	if (unlikely(!(dev->xdp_features & NETDEV_XDP_ACT_NDO_XMIT_SG) &&
+		     xdp_frame_has_frags(xdpf)))
+		return -EOPNOTSUPP;
+
+	err = xdp_ok_fwd_dev(dev, xdp_get_frame_len(xdpf));
+	if (unlikely(err))
+		return err;
+
+	xdp_bq_enqueue(dev, xdpf, dev_rx, xdp_prog);
+	return 0;
+}
+
+static inline int dev_xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
+				  struct net_device *dev_rx)
+{
+	return __xdp_enqueue_frame(dev, xdpf, dev_rx, NULL);
+}
+
+
 #endif /* __LINUX_NET_XDP_H__ */

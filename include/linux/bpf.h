@@ -2328,9 +2328,6 @@ struct sk_buff;
 struct bpf_dtab_netdev;
 struct bpf_cpu_map_entry;
 
-void __dev_flush(void);
-int dev_xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
-		    struct net_device *dev_rx);
 int dev_map_enqueue(struct bpf_dtab_netdev *dst, struct xdp_frame *xdpf,
 		    struct net_device *dev_rx);
 int dev_map_enqueue_multi(struct xdp_frame *xdpf, struct net_device *dev_rx,
@@ -2565,13 +2562,6 @@ static inline void __dev_flush(void)
 struct xdp_frame;
 struct bpf_dtab_netdev;
 struct bpf_cpu_map_entry;
-
-static inline
-int dev_xdp_enqueue(struct net_device *dev, struct xdp_frame *xdpf,
-		    struct net_device *dev_rx)
-{
-	return 0;
-}
 
 static inline
 int dev_map_enqueue(struct bpf_dtab_netdev *dst, struct xdp_frame *xdpf,

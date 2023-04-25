@@ -4204,7 +4204,7 @@ static const struct bpf_func_proto bpf_xdp_adjust_meta_proto = {
  */
 void xdp_do_flush(void)
 {
-	__dev_flush();
+	__xdp_dev_flush();
 	__cpu_map_flush();
 	__xsk_map_flush();
 }

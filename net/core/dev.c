@@ -10095,13 +10095,24 @@ int register_netdevice(struct net_device *dev)
 	if (!dev->name_node)
 		goto out;
 
+	if (dev->netdev_ops->ndo_xdp_xmit) {
+		int cpu;
+
+		dev->xdp_bulkq = alloc_percpu(struct xdp_dev_bulk_queue);
+		if (!dev->xdp_bulkq)
+			goto err_free_name;
+
+		for_each_possible_cpu(cpu)
+			per_cpu_ptr(dev->xdp_bulkq, cpu)->dev = dev;
+	}
+
 	/* Init, if this function is available */
 	if (dev->netdev_ops->ndo_init) {
 		ret = dev->netdev_ops->ndo_init(dev);
 		if (ret) {
 			if (ret > 0)
 				ret = -EIO;
-			goto err_free_name;
+			goto err_free_bulkq;
 		}
 	}
 
@@ -10227,6 +10238,9 @@ err_uninit:
 		dev->netdev_ops->ndo_uninit(dev);
 	if (dev->priv_destructor)
 		dev->priv_destructor(dev);
+err_free_bulkq:
+	free_percpu(dev->xdp_bulkq);
+	dev->xdp_bulkq = NULL;
 err_free_name:
 	netdev_name_node_free(dev->name_node);
 	goto out;

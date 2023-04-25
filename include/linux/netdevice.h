@@ -986,7 +986,6 @@ enum bpf_netdev_command {
 struct bpf_prog_offload_ops;
 struct netlink_ext_ack;
 struct xdp_umem;
-struct xdp_dev_bulk_queue;
 struct bpf_xdp_link;
 
 enum bpf_xdp_mode {
