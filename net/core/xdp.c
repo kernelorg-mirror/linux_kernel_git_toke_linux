@@ -945,14 +945,71 @@ bool dev_check_flush(void)
 }
 #endif
 
+__diag_push();
+__diag_ignore_all("-Wmissing-prototypes",
+		  "Global functions as their definitions will be in vmlinux BTF");
+__bpf_kfunc struct xdp_frame *xdp_packet_dequeue(struct bpf_map *map, u64 flags, u64 *rank)
+{
+	switch (map->map_type) {
+	case BPF_MAP_TYPE_PIFO_XDP:
+		return pifo_map_dequeue(map, flags, rank);
+	case BPF_MAP_TYPE_PIFO_XDP_RB:
+		return pifo_rb_map_dequeue(map, flags, rank);
+	case BPF_MAP_TYPE_XDP_FIFO:
+		return xdp_fifo_map_dequeue(map, flags, rank);
+	default:
+		return NULL;
+	}
+}
+
+__bpf_kfunc int xdp_packet_drop(struct xdp_frame *pkt)
+{
+	xdp_return_frame(pkt);
+	return 0;
+}
+
+__bpf_kfunc int xdp_packet_send(struct xdp_frame *pkt, int ifindex, u64 flags)
+{
+	struct net_device *dev;
+
+	if (flags)
+		return -EINVAL;
+
+	/* FIXME: need real netns selection here */
+	dev = dev_get_by_index_rcu(&init_net, ifindex);
+	if (unlikely(!dev))
+		return -EINVAL;
+
+	return dev_xdp_enqueue(dev, pkt, dev);
+}
+
+__bpf_kfunc int xdp_packet_flush(void)
+{
+	__xdp_dev_flush();
+	return 0;
+}
+__diag_pop();
+
+BTF_SET8_START(xdp_queueing_kfunc_ids)
+BTF_ID_FLAGS(func, xdp_packet_dequeue)
+BTF_ID_FLAGS(func, xdp_packet_drop)
+BTF_ID_FLAGS(func, xdp_packet_send)
+BTF_ID_FLAGS(func, xdp_packet_flush)
+BTF_SET8_END(xdp_queueing_kfunc_ids)
+
+static const struct btf_kfunc_id_set xdp_queueing_kfunc_set = {
+	.owner = THIS_MODULE,
+	.set   = &xdp_queueing_kfunc_ids,
+};
 
 static int __init xdp_init(void)
 {
-	int cpu;
+	int cpu, ret;
 
 	for_each_possible_cpu(cpu)
 		INIT_LIST_HEAD(&per_cpu(dev_flush_list, cpu));
 
-	return register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &xdp_metadata_kfunc_set);
+	ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &xdp_metadata_kfunc_set);
+	return ret ?: register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &xdp_queueing_kfunc_set);
 }
 late_initcall(xdp_init);
