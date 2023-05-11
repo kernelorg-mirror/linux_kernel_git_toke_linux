@@ -3902,28 +3902,18 @@ static const struct bpf_func_proto bpf_xdp_adjust_head_proto = {
 	.arg2_type	= ARG_ANYTHING,
 };
 
-void bpf_xdp_copy_buf(struct xdp_buff *xdp, unsigned long off,
-		      void *buf, unsigned long len, bool flush)
+static void bpf_xdp_copy_frags(struct skb_shared_info *sinfo,
+			       unsigned long ptr_len, u8 *ptr_buf,
+			       unsigned long off, void *buf,
+			       unsigned long len, bool flush)
 {
-	unsigned long ptr_len, ptr_off = 0;
 	skb_frag_t *next_frag, *end_frag;
-	struct skb_shared_info *sinfo;
+	unsigned long ptr_off = 0;
 	void *src, *dst;
-	u8 *ptr_buf;
 
-	if (likely(xdp->data_end - xdp->data >= off + len)) {
-		src = flush ? buf : xdp->data + off;
-		dst = flush ? xdp->data + off : buf;
-		memcpy(dst, src, len);
-		return;
-	}
-
-	sinfo = xdp_get_shared_info_from_buff(xdp);
 	end_frag = &sinfo->frags[sinfo->nr_frags];
 	next_frag = &sinfo->frags[0];
 
-	ptr_len = xdp->data_end - xdp->data;
-	ptr_buf = xdp->data;
 
 	while (true) {
 		if (off < ptr_off + ptr_len) {
@@ -3949,36 +3939,98 @@ void bpf_xdp_copy_buf(struct xdp_buff *xdp, unsigned long off,
 	}
 }
 
-void *bpf_xdp_pointer(struct xdp_buff *xdp, u32 offset, u32 len)
+void bpf_xdp_copy_buf(struct xdp_buff *xdp, unsigned long off,
+		      void *buf, unsigned long len, bool flush)
 {
-	u32 size = xdp->data_end - xdp->data;
-	struct skb_shared_info *sinfo;
-	void *addr = xdp->data;
+	void *src, *dst;
+
+	if (likely(xdp->data_end - xdp->data >= off + len)) {
+		src = flush ? buf : xdp->data + off;
+		dst = flush ? xdp->data + off : buf;
+		memcpy(dst, src, len);
+		return;
+	}
+
+	bpf_xdp_copy_frags(xdp_get_shared_info_from_buff(xdp),
+			   xdp->data_end - xdp->data,
+			   xdp->data,
+			   off, buf, len, flush);
+}
+
+void bpf_xdp_copy_frame(struct xdp_frame *xdp, unsigned long off,
+			void *buf, unsigned long len, bool flush)
+{
+	void *src, *dst;
+
+	if (likely(xdp->len >= off + len)) {
+		src = flush ? buf : xdp->data + off;
+		dst = flush ? xdp->data + off : buf;
+		memcpy(dst, src, len);
+		return;
+	}
+
+	bpf_xdp_copy_frags(xdp_get_shared_info_from_frame(xdp),
+			   xdp->len,
+			   xdp->data,
+			   off, buf, len, flush);
+}
+
+static void *__bpf_xdp_sinfo_pointer(struct skb_shared_info *sinfo, u32 offset,
+				     u32 len, void *addr)
+{
+	u32 frag_size = 0;
 	int i;
 
-	if (unlikely(offset > 0xffff || len > 0xffff))
-		return ERR_PTR(-EFAULT);
-
-	if (unlikely(offset + len > xdp_get_buff_len(xdp)))
+	if (offset + len > sinfo->xdp_frags_size)
 		return ERR_PTR(-EINVAL);
 
-	if (likely(offset < size)) /* linear area */
-		goto out;
-
-	sinfo = xdp_get_shared_info_from_buff(xdp);
-	offset -= size;
 	for (i = 0; i < sinfo->nr_frags; i++) { /* paged area */
-		u32 frag_size = skb_frag_size(&sinfo->frags[i]);
+		frag_size = skb_frag_size(&sinfo->frags[i]);
 
 		if  (offset < frag_size) {
 			addr = skb_frag_address(&sinfo->frags[i]);
-			size = frag_size;
 			break;
 		}
 		offset -= frag_size;
 	}
-out:
-	return offset + len <= size ? addr + offset : NULL;
+
+	return offset + len <= frag_size ? addr + offset : NULL;
+}
+
+void *bpf_xdp_pointer(struct xdp_buff *xdp, u32 offset, u32 len)
+{
+	u32 size = xdp->data_end - xdp->data;
+	void *addr = xdp->data;
+
+	if (unlikely(offset > 0xffff || len > 0xffff))
+		return ERR_PTR(-EFAULT);
+
+	if (offset < size) /* linear area */
+		return offset + len <= size ? addr + offset : NULL;
+
+	if (!xdp_buff_has_frags(xdp))
+		return ERR_PTR(-EINVAL);
+
+	return __bpf_xdp_sinfo_pointer(xdp_get_shared_info_from_buff(xdp),
+				       offset - size, len, addr);
+}
+
+void *bpf_xdp_frame_pointer(struct xdp_frame *xdp, u32 offset, u32 len)
+{
+	void *addr = xdp->data;
+	u32 size = xdp->len;
+
+	if (unlikely(offset > 0xffff || len > 0xffff))
+		return ERR_PTR(-EFAULT);
+
+	if (offset < size) /* linear area */
+		return offset + len <= size ? addr + offset : NULL;
+
+	if (!xdp_frame_has_frags(xdp))
+		return ERR_PTR(-EINVAL);
+
+	return __bpf_xdp_sinfo_pointer(xdp_get_shared_info_from_frame(xdp),
+				       offset - size, len, addr);
 }
 
 BPF_CALL_4(bpf_xdp_load_bytes, struct xdp_buff *, xdp, u32, offset,
@@ -4013,6 +4065,24 @@ int __bpf_xdp_load_bytes(struct xdp_buff *xdp, u32 offset, void *buf, u32 len)
 	return ____bpf_xdp_load_bytes(xdp, offset, buf, len);
 }
 
+int __bpf_xdp_frame_load_bytes(struct xdp_frame *xdp, u32 offset,
+			       void * buf, u32 len)
+{
+	void *ptr;
+
+	ptr = bpf_xdp_frame_pointer(xdp, offset, len);
+	if (IS_ERR(ptr))
+		return PTR_ERR(ptr);
+
+	if (!ptr)
+		bpf_xdp_copy_frame(xdp, offset, buf, len, false);
+	else
+		memcpy(buf, ptr, len);
+
+	return 0;
+}
+
+
 BPF_CALL_4(bpf_xdp_store_bytes, struct xdp_buff *, xdp, u32, offset,
 	   void *, buf, u32, len)
 {
@@ -4043,6 +4113,23 @@ static const struct bpf_func_proto bpf_xdp_store_bytes_proto = {
 int __bpf_xdp_store_bytes(struct xdp_buff *xdp, u32 offset, void *buf, u32 len)
 {
 	return ____bpf_xdp_store_bytes(xdp, offset, buf, len);
+}
+
+int __bpf_xdp_frame_store_bytes(struct xdp_frame *xdp, u32 offset,
+				void *buf, u32 len)
+{
+	void *ptr;
+
+	ptr = bpf_xdp_frame_pointer(xdp, offset, len);
+	if (IS_ERR(ptr))
+		return PTR_ERR(ptr);
+
+	if (!ptr)
+		bpf_xdp_copy_frame(xdp, offset, buf, len, true);
+	else
+		memcpy(ptr, buf, len);
+
+	return 0;
 }
 
 static int bpf_xdp_frags_increase_tail(struct xdp_buff *xdp, int offset)
@@ -11805,6 +11892,19 @@ __bpf_kfunc int bpf_dynptr_from_xdp(struct xdp_buff *xdp, u64 flags,
 	return 0;
 }
 
+__bpf_kfunc int bpf_dynptr_from_xdp_frame(struct xdp_frame *xdp, u64 flags,
+					  struct bpf_dynptr_kern *ptr__uninit)
+{
+	if (flags) {
+		bpf_dynptr_set_null(ptr__uninit);
+		return -EINVAL;
+	}
+
+	bpf_dynptr_init(ptr__uninit, xdp, BPF_DYNPTR_TYPE_XDP_FRAME, 0, xdp_get_frame_len(xdp));
+
+	return 0;
+}
+
 __bpf_kfunc int bpf_sock_addr_set_sun_path(struct bpf_sock_addr_kern *sa_kern,
 					   const u8 *sun_path, u32 sun_path__sz)
 {
@@ -11825,6 +11925,7 @@ __bpf_kfunc int bpf_sock_addr_set_sun_path(struct bpf_sock_addr_kern *sa_kern,
 
 	return 0;
 }
+
 __diag_pop();
 
 int bpf_dynptr_from_skb_rdonly(struct sk_buff *skb, u64 flags,
@@ -11847,6 +11948,7 @@ BTF_SET8_END(bpf_kfunc_check_set_skb)
 
 BTF_SET8_START(bpf_kfunc_check_set_xdp)
 BTF_ID_FLAGS(func, bpf_dynptr_from_xdp)
+BTF_ID_FLAGS(func, bpf_dynptr_from_xdp_frame)
 BTF_SET8_END(bpf_kfunc_check_set_xdp)
 
 BTF_SET8_START(bpf_kfunc_check_set_sock_addr)

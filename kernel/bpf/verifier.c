@@ -746,6 +746,8 @@ static const char *dynptr_type_str(enum bpf_dynptr_type type)
 		return "skb";
 	case BPF_DYNPTR_TYPE_XDP:
 		return "xdp";
+	case BPF_DYNPTR_TYPE_XDP_FRAME:
+		return "xdp_frm";
 	case BPF_DYNPTR_TYPE_INVALID:
 		return "<invalid>";
 	default:
@@ -827,6 +829,8 @@ static enum bpf_dynptr_type arg_to_dynptr_type(enum bpf_arg_type arg_type)
 		return BPF_DYNPTR_TYPE_SKB;
 	case DYNPTR_TYPE_XDP:
 		return BPF_DYNPTR_TYPE_XDP;
+	case DYNPTR_TYPE_XDP_FRAME:
+		return BPF_DYNPTR_TYPE_XDP_FRAME;
 	default:
 		return BPF_DYNPTR_TYPE_INVALID;
 	}
@@ -843,6 +847,8 @@ static enum bpf_type_flag get_dynptr_type_flag(enum bpf_dynptr_type type)
 		return DYNPTR_TYPE_SKB;
 	case BPF_DYNPTR_TYPE_XDP:
 		return DYNPTR_TYPE_XDP;
+	case BPF_DYNPTR_TYPE_XDP_FRAME:
+		return DYNPTR_TYPE_XDP_FRAME;
 	default:
 		return 0;
 	}
@@ -2240,7 +2246,8 @@ static bool reg_is_pkt_pointer_any(const struct bpf_reg_state *reg)
 static bool reg_is_dynptr_slice_pkt(const struct bpf_reg_state *reg)
 {
 	return base_type(reg->type) == PTR_TO_MEM &&
-		(reg->type & DYNPTR_TYPE_SKB || reg->type & DYNPTR_TYPE_XDP);
+		(reg->type & DYNPTR_TYPE_SKB || reg->type & DYNPTR_TYPE_XDP ||
+		 reg->type & DYNPTR_TYPE_XDP_FRAME);
 }
 
 /* Unmodified PTR_TO_PACKET[_META,_END] register from ctx access. */
@@ -10818,6 +10825,7 @@ enum special_kfunc_type {
 	KF_bpf_percpu_obj_drop_impl,
 	KF_bpf_throw,
 	KF_bpf_iter_css_task_new,
+	KF_bpf_dynptr_from_xdp_frame,
 };
 
 BTF_SET_START(special_kfunc_set)
@@ -10842,6 +10850,7 @@ BTF_ID(func, bpf_percpu_obj_new_impl)
 BTF_ID(func, bpf_percpu_obj_drop_impl)
 BTF_ID(func, bpf_throw)
 BTF_ID(func, bpf_iter_css_task_new)
+BTF_ID(func, bpf_dynptr_from_xdp_frame)
 BTF_SET_END(special_kfunc_set)
 
 BTF_ID_LIST(special_kfunc_list)
@@ -10868,6 +10877,7 @@ BTF_ID(func, bpf_percpu_obj_new_impl)
 BTF_ID(func, bpf_percpu_obj_drop_impl)
 BTF_ID(func, bpf_throw)
 BTF_ID(func, bpf_iter_css_task_new)
+BTF_ID(func, bpf_dynptr_from_xdp_frame)
 
 static bool is_kfunc_ret_null(struct bpf_kfunc_call_arg_meta *meta)
 {
@@ -11647,6 +11657,8 @@ static int check_kfunc_args(struct bpf_verifier_env *env, struct bpf_kfunc_call_
 					return -EFAULT;
 				}
 			}
+			else if (meta->func_id == special_kfunc_list[KF_bpf_dynptr_from_xdp_frame])
+				dynptr_arg_type |= DYNPTR_TYPE_XDP_FRAME;
 
 			ret = process_dynptr_func(env, regno, insn_idx, dynptr_arg_type, clone_ref_obj_id);
 			if (ret < 0)
