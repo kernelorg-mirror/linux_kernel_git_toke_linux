@@ -412,6 +412,8 @@ void xdp_return_frame(struct xdp_frame *xdpf)
 	struct skb_shared_info *sinfo;
 	int i;
 
+	trace_xdp_frame_return(xdpf, 0);
+
 	if (likely(!xdp_frame_has_frags(xdpf)))
 		goto out;
 
@@ -430,6 +432,8 @@ void xdp_return_frame_rx_napi(struct xdp_frame *xdpf)
 {
 	struct skb_shared_info *sinfo;
 	int i;
+
+	trace_xdp_frame_return(xdpf, 0);
 
 	if (likely(!xdp_frame_has_frags(xdpf)))
 		goto out;
@@ -461,6 +465,13 @@ void xdp_flush_frame_bulk(struct xdp_frame_bulk *bq)
 
 	if (unlikely(!xa || !bq->count))
 		return;
+
+	if (trace_xdp_frame_return_enabled()) {
+		int i;
+
+		for (i = 0; i < bq->count; i++)
+			trace_xdp_frame_return(bq->q[i], bq->count - i - 1);
+	}
 
 	page_pool_put_page_bulk(xa->page_pool, bq->q, bq->count);
 	/* bq->xa is not cleared to save lookup, if mem.id same in next bulk */
@@ -508,7 +519,11 @@ void xdp_return_frame_bulk(struct xdp_frame *xdpf,
 				xdp_flush_frame_bulk(bq);
 		}
 	}
-	bq->q[bq->count++] = xdpf->data;
+	// HACK: Put the xdp_frame itself unto the q instead of xdpf->data, so
+	// we can access xdp_frame in xdp_flush_frame_bulk above for the
+	// tracepoint. This should be safe, since the XDP frame lives in the
+	// space just before the data (so in the same data page)
+	bq->q[bq->count++] = xdpf;
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame_bulk);
 

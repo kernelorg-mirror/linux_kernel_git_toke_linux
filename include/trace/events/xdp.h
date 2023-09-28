@@ -301,6 +301,29 @@ TRACE_EVENT(xdp_devmap_xmit,
 		  __entry->err)
 );
 
+TRACE_EVENT(xdp_frame_return,
+
+	TP_PROTO(struct xdp_frame *frame, u16 bulk_remaining),
+
+	TP_ARGS(frame, bulk_remaining),
+
+	TP_STRUCT__entry(
+		__field(void *, frame)
+		__field(u16, length)
+		__field(u16, bulk_remaining)
+	),
+
+	TP_fast_assign(
+		__entry->frame		= frame;
+		__entry->length	= frame->len;
+		__entry->bulk_remaining	= bulk_remaining;
+	),
+
+	TP_printk("frame_return %lu len=%u bulk_remaining=%u",
+		  (long)__entry->frame, __entry->length, __entry->bulk_remaining)
+);
+
+
 /* Expect users already include <net/xdp.h>, but not xdp_priv.h */
 #include <net/xdp_priv.h>
 
