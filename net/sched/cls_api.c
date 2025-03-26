@@ -2108,29 +2108,46 @@ cls_op_not_supp:
 	return -1;
 }
 
+static struct sk_buff *tfilter_notify_prep(struct net *net, struct nlmsghdr *n,
+					   struct tcf_proto *tp,
+					   struct tcf_block *block,
+					   struct Qdisc *q,
+					   u32 parent, void *fh, u32 portid, int event,
+					   bool rtnl_held, struct netlink_ext_ack *extack)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!skb)
+		return ERR_PTR(-ENOBUFS);
+
+	if (tcf_fill_node(net, skb, tp, block, q, parent, fh, portid,
+			  n->nlmsg_seq, n->nlmsg_flags, event,
+			  false, rtnl_held, extack) <= 0) {
+		kfree_skb(skb);
+		return ERR_PTR(-EINVAL);
+	}
+
+	return skb;
+}
+
 static int tfilter_notify(struct net *net, struct sk_buff *oskb,
 			  struct nlmsghdr *n, struct tcf_proto *tp,
 			  struct tcf_block *block, struct Qdisc *q,
 			  u32 parent, void *fh, int event, bool unicast,
 			  bool rtnl_held, struct netlink_ext_ack *extack)
 {
-	struct sk_buff *skb;
 	u32 portid = oskb ? NETLINK_CB(oskb).portid : 0;
+	struct sk_buff *skb;
 	int err = 0;
 
 	if (!unicast && !rtnl_notify_needed(net, n->nlmsg_flags, RTNLGRP_TC))
 		return 0;
 
-	skb = alloc_skb(NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!skb)
-		return -ENOBUFS;
-
-	if (tcf_fill_node(net, skb, tp, block, q, parent, fh, portid,
-			  n->nlmsg_seq, n->nlmsg_flags, event,
-			  false, rtnl_held, extack) <= 0) {
-		kfree_skb(skb);
-		return -EINVAL;
-	}
+	skb = tfilter_notify_prep(net, n, tp, block, q, parent, fh, portid,
+				  event, rtnl_held, extack);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
 
 	if (unicast)
 		err = rtnl_unicast(skb, net, portid);
@@ -2139,6 +2156,7 @@ static int tfilter_notify(struct net *net, struct sk_buff *oskb,
 				     n->nlmsg_flags & NLM_F_ECHO);
 	return err;
 }
+
 
 static int tfilter_del_notify(struct net *net, struct sk_buff *oskb,
 			      struct nlmsghdr *n, struct tcf_proto *tp,
@@ -2153,15 +2171,10 @@ static int tfilter_del_notify(struct net *net, struct sk_buff *oskb,
 	if (!rtnl_notify_needed(net, n->nlmsg_flags, RTNLGRP_TC))
 		return tp->ops->delete(tp, fh, last, rtnl_held, extack);
 
-	skb = alloc_skb(NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!skb)
-		return -ENOBUFS;
-
-	if (tcf_fill_node(net, skb, tp, block, q, parent, fh, portid,
-			  n->nlmsg_seq, n->nlmsg_flags, RTM_DELTFILTER,
-			  false, rtnl_held, extack) <= 0) {
+	skb = tfilter_notify_prep(net, n, tp, block, q, parent, fh, portid,
+				  RTM_DELTFILTER, rtnl_held, extack);
+	if (IS_ERR(skb)) {
 		NL_SET_ERR_MSG(extack, "Failed to build del event notification");
-		kfree_skb(skb);
 		return -EINVAL;
 	}
 
@@ -2207,6 +2220,7 @@ static bool is_qdisc_ingress(__u32 classid)
 static int tc_new_tfilter(struct sk_buff *skb, struct nlmsghdr *n,
 			  struct netlink_ext_ack *extack)
 {
+	u32 portid = NETLINK_CB(skb).portid;
 	struct net *net = sock_net(skb->sk);
 	struct nlattr *tca[TCA_MAX + 1];
 	char name[IFNAMSIZ];
@@ -2218,6 +2232,7 @@ static int tc_new_tfilter(struct sk_buff *skb, struct nlmsghdr *n,
 	u32 chain_index;
 	struct Qdisc *q;
 	struct tcf_chain_info chain_info;
+	struct sk_buff *nskb = NULL;
 	struct tcf_chain *chain;
 	struct tcf_block *block;
 	struct tcf_proto *tp;
@@ -2390,6 +2405,17 @@ replay:
 		goto errout;
 	}
 
+	if (rtnl_notify_needed(net, n->nlmsg_flags, RTNLGRP_TC)) {
+		nskb = tfilter_notify_prep(net, n, tp, block, q, parent, fh, portid,
+					   RTM_NEWTFILTER, rtnl_held, extack);
+		if (IS_ERR(nskb)) {
+			NL_SET_ERR_MSG(extack, "Failed to build create event notification");
+			err = PTR_ERR(nskb);
+			nskb = NULL;
+			goto errout;
+		}
+	}
+
 	if (!(n->nlmsg_flags & NLM_F_CREATE))
 		flags |= TCA_ACT_FLAGS_REPLACE;
 	if (!rtnl_held)
@@ -2399,8 +2425,11 @@ replay:
 	err = tp->ops->change(net, skb, tp, cl, t->tcm_handle, tca, &fh,
 			      flags, extack);
 	if (err == 0) {
-		tfilter_notify(net, skb, n, tp, block, q, parent, fh,
-			       RTM_NEWTFILTER, false, rtnl_held, extack);
+		if (nskb) {
+			rtnetlink_send(nskb, net, portid, RTNLGRP_TC,
+				       n->nlmsg_flags & NLM_F_ECHO);
+			nskb = NULL;
+		}
 		tfilter_put(tp, fh);
 		tcf_proto_count_usesw(tp, true);
 		/* q pointer is NULL for shared blocks */
@@ -2409,6 +2438,8 @@ replay:
 	}
 
 errout:
+	if (nskb)
+		kfree_skb(nskb);
 	if (err && tp_created)
 		tcf_chain_tp_delete_empty(chain, tp, rtnl_held, NULL);
 errout_tp:
@@ -2550,13 +2581,28 @@ static int tc_del_tfilter(struct sk_buff *skb, struct nlmsghdr *n,
 		err = -EINVAL;
 		goto errout_locked;
 	} else if (t->tcm_handle == 0) {
+		u32 portid = NETLINK_CB(skb).portid;
+		struct sk_buff *nskb = NULL;
+
+		if (rtnl_notify_needed(net, n->nlmsg_flags, RTNLGRP_TC)) {
+			nskb = tfilter_notify_prep(net, n, tp, block, q, parent, fh,
+						   portid, RTM_DELTFILTER, rtnl_held,
+						   extack);
+			if (IS_ERR(nskb)) {
+				NL_SET_ERR_MSG(extack, "Failed to build del event notification");
+				err = PTR_ERR(nskb);
+				goto errout;
+			}
+		}
+
 		tcf_proto_signal_destroying(chain, tp);
 		tcf_chain_tp_remove(chain, &chain_info, tp);
 		mutex_unlock(&chain->filter_chain_lock);
 
 		tcf_proto_put(tp, rtnl_held, NULL);
-		tfilter_notify(net, skb, n, tp, block, q, parent, fh,
-			       RTM_DELTFILTER, false, rtnl_held, extack);
+		if (nskb)
+			rtnetlink_send(nskb, net, portid, RTNLGRP_TC,
+				       n->nlmsg_flags & NLM_F_ECHO);
 		err = 0;
 		goto errout;
 	}
